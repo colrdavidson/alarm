@@ -66,9 +66,8 @@ main :: proc() {
 
 		current_time := time.now()
 
-		side_min := min(pt.width / 3, pt.height / 3)
+		side_min := min(pt.width / 2.5, pt.height / 2.5)
 		x_pos, y_pos := center_xy(pt.width, pt.height, side_min, side_min)
-
 
 		cur_task_idx := -1
 		#reverse for task, idx in task_list {
@@ -91,7 +90,8 @@ main :: proc() {
 				perc := rem_sec / total_sec
 
 				color_idx := i % (len(pt.colors.active) - 1)
-				draw_circle(&pt, Vec2{pt.width / 2, pt.height / 2}, side_min + (pt.em * 0.5 * f64(i)), perc, pt.colors.active[color_idx])
+				radius := ((pt.em * f64(cur_task_idx - i)) / 2) + side_min
+				draw_circle(&pt, Vec2{pt.width / 2, pt.height / 2}, radius, perc, pt.colors.active[color_idx])
 
 				task_width = max(measure_text(&pt, task.name, .H1Size, .DefaultFont), task_width)
 			}
