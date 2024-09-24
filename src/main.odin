@@ -2,9 +2,9 @@ package main
 
 import "core:os"
 import "core:fmt"
+import "core:slice"
 import "core:c/libc"
 import "core:time"
-import "core:time/datetime"
 
 Task :: struct {
 	name: string,
@@ -18,29 +18,118 @@ time_to_ctm :: proc(tm: time.Time) -> libc.tm {
 		tm_min  = i32(dtm.time.minute),
 		tm_hour = i32(dtm.time.hour),
 		tm_mday = i32(dtm.date.day),
-		tm_mon  = i32(dtm.date.month),
-		tm_year = i32(dtm.date.year),
-		tm_isdst = -1,
+		tm_mon  = i32(dtm.date.month - 1),
+		tm_year = i32(dtm.date.year - 1900),
+		tm_isdst = 0,
 	}
 	return ctm
 }
 time_to_ctime :: proc(tm: time.Time) -> libc.time_t {
-	ctm := time_to_ctm(tm)
-	ctime := libc.mktime(&ctm)
-	return ctime
+	return libc.time_t(time.to_unix_seconds(tm))
 }
-ctime_to_time :: proc(_ctime: libc.time_t) -> time.Time {
-	ctime := _ctime
-	ctm := libc.gmtime(&ctime)
+ctm_to_time :: proc(_ctm: libc.tm) -> time.Time {
+	ctm := _ctm
 	tm, _ := time.components_to_time(
-		ctm.tm_year,
-		ctm.tm_mon,
+		ctm.tm_year + 1900,
+		ctm.tm_mon + 1,
 		ctm.tm_mday,
 		ctm.tm_hour,
 		ctm.tm_min,
 		ctm.tm_sec,
 	)
 	return tm
+}
+ctime_to_time :: proc(_ctime: libc.time_t) -> time.Time {
+	ctime := _ctime
+	ctm := libc.gmtime(&ctime)^
+	return ctm_to_time(ctm)
+}
+
+get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Time {
+	cur_ctime := time_to_ctime(start_time)
+	ctm := libc.localtime(&cur_ctime)^
+	
+	ctm.tm_hour = i32(hour)
+	ctm.tm_min = i32(minute)
+	ctm.tm_sec = 0
+
+	tmp_ctime := libc.mktime(&ctm)
+	if libc.difftime(tmp_ctime, cur_ctime) < 0 {
+		ctm.tm_mday += 1
+	}
+
+	next_event := ctime_to_time(libc.mktime(&ctm))
+
+	return next_event
+}
+
+get_next_day_and_time :: proc(start_time: time.Time, weekday: int, hour: int, minute: int) -> time.Time {
+	cur_ctime := time_to_ctime(start_time)
+	ctm := libc.localtime(&cur_ctime)^
+
+	ctm.tm_hour = i32(hour)
+	ctm.tm_min = i32(minute)
+	ctm.tm_sec = 0
+
+	day_delta := i32(weekday) - ctm.tm_wday
+	if day_delta == 0 {
+		tmp_ctime := libc.mktime(&ctm)
+		if libc.difftime(tmp_ctime, cur_ctime) < 0 {
+			ctm.tm_mday += 7
+		}
+	} else if day_delta < 0 {
+		ctm.tm_mday += (7 + day_delta)
+	} else {
+		ctm.tm_mday += day_delta
+	}
+
+	next_event := ctime_to_time(libc.mktime(&ctm))
+	return next_event
+}
+
+normalize_tm :: proc(_tm: libc.tm) -> libc.tm {
+	tm := _tm
+	l_ctime := libc.mktime(&tm)
+	return libc.localtime(&l_ctime)^
+}
+
+get_next_last_day :: proc(start_time: time.Time, weekday, hour, minute: int) -> time.Time {
+	cur_ctime := time_to_ctime(start_time)
+	ctm := libc.localtime(&cur_ctime)^
+
+	ctm.tm_hour = i32(hour)
+	ctm.tm_min = i32(minute)
+	ctm.tm_sec = 0
+	ctm.tm_mday = 0
+	ctm.tm_mon += 1
+	ctm = normalize_tm(ctm)
+
+	day_delta := i32(weekday) - ctm.tm_wday
+	day_off := 7 - day_delta - 1
+	if day_delta > 0 {
+		day_off *= -1
+	}
+	ctm.tm_mday += day_off
+	ctm = normalize_tm(ctm)
+
+	tmp_ctime := libc.mktime(&ctm)
+	if libc.difftime(tmp_ctime, cur_ctime) < 0 {
+		ctm.tm_mday = 0
+		ctm.tm_mon += 2
+		ctm = normalize_tm(ctm)
+
+		day_delta := i32(weekday) - ctm.tm_wday
+		day_off := 7 - day_delta - 1
+		if day_delta > 0 {
+			day_off *= -1
+		}
+
+		ctm.tm_mday += day_off
+		ctm = normalize_tm(ctm)
+	}
+
+	next_event := ctime_to_time(libc.mktime(&ctm))
+	return next_event
 }
 
 main :: proc() {
@@ -60,35 +149,40 @@ main :: proc() {
 	stored_width  := pt.width
 
 	start_time := time.now()
+	fmt.printf("%v | NOW\n", start_time)
 
-	get_next_wakeup :: proc(start_time: time.Time) -> time.Time {
-		ctm := time_to_ctm(start_time)
-		ctm.tm_hour = 10
-		ctm.tm_min = 0
-		ctm.tm_sec = 0
-
-		tmp_ctime := libc.mktime(&ctm)
-		if libc.difftime(tmp_ctime, time_to_ctime(start_time)) < 0 {
-			ctm.tm_mday += 1
-		}
-
-		ctime := libc.mktime(&ctm)
-		next_wakeup := ctime_to_time(ctime)
-
-		return next_wakeup
-	}
-	
 	task_list := []Task{
-/*
-		{"HMN Admin Meeting",          time.time_add(start_time, (10 * time.Second))},
-		{"Handmade Co-Working Meetup", time.time_add(start_time, (1  * time.Minute))},
-		{"Handmade Cities Meetup",     time.time_add(start_time, (2  * time.Minute))},
-		{"Handmade Third Place",       time.time_add(start_time, (5  * time.Minute))},
-		{"Pay Bills",                  time.time_add(start_time, (10 * time.Minute))},
-		{"Eat Hot Chip and Lie",       time.time_add(start_time, (30 * time.Minute))},
-*/
-		{"Wake Up",                    get_next_wakeup(start_time)},
+		{"Wake Up",                    get_next_time(start_time, 11, 0)},
+		{"Bed Time",                   get_next_time(start_time, 2, 0)},
+		{"HMN Admin Meeting",          get_next_day_and_time(start_time, 1, 15, 0)},
+		{"Handmade Co-Working Meetup", get_next_day_and_time(start_time, 3, 15, 0)},
+		{"Handmade Cities Meetup",     get_next_last_day(start_time, 6, 15, 0)},
 	}
+
+/*
+	wakeup := get_next_time(start_time, 6, 0)
+	task_list := []Task{
+		{"Wake Up",                    wakeup},
+		{"Read My Blogs",              time.time_add(wakeup, 1 * time.Hour)},
+		{"Hop over to Ground Central", time.time_add(wakeup, (2 * time.Hour) + (30 * time.Minute))},
+		{"Time for Standup",           time.time_add(wakeup, (4 * time.Hour))},
+		{"News Blast",                 time.time_add(wakeup, (5 * time.Hour) + (30 * time.Minute))},
+		{"Vegan Bolognese",            time.time_add(wakeup, (6 * time.Hour))},
+		{"Call it a Day",              time.time_add(wakeup, (14 * time.Hour) + (30 * time.Minute))},
+		{"Happy Hour",                 time.time_add(wakeup, (15 * time.Hour))},
+		{"Back In Bed",                time.time_add(wakeup, (25 * time.Hour) + (37 * time.Minute))},
+	}
+*/
+
+	task_sort_proc :: proc(i, j: Task) -> bool {
+		dur := time.diff(i.time, j.time)
+		return dur > 0
+	}
+	slice.sort_by(task_list[:], task_sort_proc)
+	for task, idx in task_list {
+		fmt.printf("%v | %s\n", task.time, task.name)
+	}
+
 	max_visible := 4
 	list_max    := 5
 
