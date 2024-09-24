@@ -1,0 +1,12 @@
+bin
+*.swp
+.DS_Store
+*.zip
+
+alarm_pkg
+collect_builds.sh
+package_builds.sh
+
+resources/alarm.res
+spall-native.sublime-project
+spall-native.sublime-workspace
