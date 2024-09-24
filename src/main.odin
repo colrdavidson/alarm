@@ -63,12 +63,15 @@ main :: proc() {
 
 	get_next_wakeup :: proc(start_time: time.Time) -> time.Time {
 		ctm := time_to_ctm(start_time)
-		if ctm.tm_hour > 11 {
-			ctm.tm_mday += 1
-		}
-		ctm.tm_hour = 11
+		ctm.tm_hour = 10
 		ctm.tm_min = 0
 		ctm.tm_sec = 0
+
+		tmp_ctime := libc.mktime(&ctm)
+		if libc.difftime(tmp_ctime, time_to_ctime(start_time)) < 0 {
+			ctm.tm_mday += 1
+		}
+
 		ctime := libc.mktime(&ctm)
 		next_wakeup := ctime_to_time(ctime)
 
