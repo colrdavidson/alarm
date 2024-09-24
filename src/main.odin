@@ -27,20 +27,20 @@ main :: proc() {
 
 	start_time := time.now()
 	task_list := []Task{
-		{"HMN Admin Meeting",          time.time_add(start_time, (5 * time.Second))},
-		{"Handmade Co-Working Meetup", time.time_add(start_time, (10 * time.Second))},
-		{"Handmade Cities Meetup",     time.time_add(start_time, (15 * time.Second))},
-		{"Handmade Third Place",       time.time_add(start_time, (20 * time.Second))},
-		{"Pay Bills",                  time.time_add(start_time, (25 * time.Second))},
-		{"Eat Hot Chip and Lie",       time.time_add(start_time, (30 * time.Second))},
+		{"HMN Admin Meeting",          time.time_add(start_time, (10 * time.Second))},
+		{"Handmade Co-Working Meetup", time.time_add(start_time, (1  * time.Minute))},
+		{"Handmade Cities Meetup",     time.time_add(start_time, (2  * time.Minute))},
+		{"Handmade Third Place",       time.time_add(start_time, (5  * time.Minute))},
+		{"Pay Bills",                  time.time_add(start_time, (10 * time.Minute))},
+		{"Eat Hot Chip and Lie",       time.time_add(start_time, (30 * time.Minute))},
 	}
-	max_visible := 3
+	max_visible := 4
 	list_max    := 5
 
 	ev := PlatformEvent{}
 	main_loop: for {
 		event_loop: for {
-			ev = get_next_event(&pt, !pt.awake)
+			ev = get_next_event(&pt, !pt.has_focus)
 			if ev.type == .None {
 				break event_loop
 			}
@@ -55,14 +55,20 @@ main :: proc() {
 			case .Resize:
 				stored_height = ev.h
 				stored_width  = ev.w
+			case .FocusGained:
+				pt.has_focus = true
+			case .FocusLost:
+				pt.has_focus = false
 			}
 		}
+
 		setup_frame(&pt, int(stored_height), int(stored_width))
 
 		current_time := time.now()
 
 		side_min := min(pt.width / 3, pt.height / 3)
 		x_pos, y_pos := center_xy(pt.width, pt.height, side_min, side_min)
+
 
 		cur_task_idx := -1
 		#reverse for task, idx in task_list {
@@ -109,73 +115,87 @@ main :: proc() {
 			task_name_width := measure_text(&pt, cur_task.name, .H1Size, .DefaultFont)
 			max_width := max(up_next_width, task_name_width)
 
-			x := center_x(inner_radius * 2, max_width)
-			draw_text(&pt, wheel_text, Vec2{(inner_center.x - inner_radius) + x, container.y + y}, .H1Size, .DefaultFontBold, pt.colors.text)
-			draw_text(&pt, cur_task.name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
-		}
+			name := fmt.ctprintf("Alarm | Up Next: %s\n", cur_task.name)
 
-		next_y :: proc(pt: ^Platform_State, y: ^f64, height: f64) -> f64 {
-			cur_y := y^
-			y^ = cur_y + height + (pt.em * .4)
-			return cur_y
-		}
-
-		list_y := pt.em
-		header_height := get_text_height(&pt, .H1Size, .DefaultFontBold)
-		draw_text(&pt, "Upcoming Tasks", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
-		list_y += (pt.em * 0.1)
-
-		idx := cur_task_idx
-		for i := 0; i < list_max; i += 1 {
-			task_height := get_text_height(&pt, .H1Size, .DefaultFont)
-			padded_height := task_height + pt.em
-			y_start := next_y(&pt, &list_y, padded_height)
-			text_y := y_start + center_x(list_y - y_start, padded_height)
-
-			if idx >= len(task_list) || idx < 0 {
-				continue
-			}
-
-			task := &task_list[idx]
-
-			text_color := pt.colors.dark_text
-			if idx < (cur_task_idx + max_visible) {
-				color_idx := idx % (len(pt.colors.active) - 1)
-				draw_rect(&pt, Rect{pt.em, y_start, task_width + (pt.em * .5), padded_height}, pt.colors.active[color_idx])
+			if max_width < (inner_radius * 2) {
+				x := center_x(inner_radius * 2, max_width)
+				draw_text(&pt, wheel_text, Vec2{(inner_center.x - inner_radius) + x, container.y + y}, .H1Size, .DefaultFontBold, pt.colors.text)
+				draw_text(&pt, cur_task.name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
 			} else {
-				text_color = pt.colors.text
+				name = fmt.ctprintf("%s\n", cur_task.name)
 			}
 
-			draw_text(&pt, task.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, text_color)
-			idx += 1
+			set_window_title(&pt, name)
+		} else {
+			set_window_title(&pt, "Alarm")
 		}
 
-		list_y += pt.em
-		header_height = get_text_height(&pt, .H1Size, .DefaultFontBold)
-		draw_text(&pt, "Prior Tasks", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
-		list_y += (pt.em * 0.1)
-
-		idx = cur_task_idx - 1
-		if cur_task_idx < 0 {
-			idx = len(task_list) - 1
-		}
-
-		for i := list_max; i >= 0; i -= 1 {
-			task_height := get_text_height(&pt, .H1Size, .DefaultFont)
-			padded_height := task_height + pt.em
-			y_start := next_y(&pt, &list_y, padded_height)
-			text_y := y_start + center_x(list_y - y_start, padded_height)
-
-			if idx >= len(task_list) || idx < 0 {
-				continue
+		if pt.width >= 1000 {
+			next_y :: proc(pt: ^Platform_State, y: ^f64, height: f64) -> f64 {
+				cur_y := y^
+				y^ = cur_y + height + (pt.em * .4)
+				return cur_y
 			}
 
-			task := &task_list[idx]
-			draw_text(&pt, task.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
-			idx -= 1
+			list_y := pt.em
+			header_height := get_text_height(&pt, .H1Size, .DefaultFontBold)
+			draw_text(&pt, "Upcoming Tasks", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			list_y += (pt.em * 0.1)
+
+			idx := cur_task_idx
+			for i := 0; i < list_max; i += 1 {
+				task_height := get_text_height(&pt, .H1Size, .DefaultFont)
+				padded_height := task_height + pt.em
+				y_start := next_y(&pt, &list_y, padded_height)
+				text_y := y_start + center_x(list_y - y_start, padded_height)
+
+				if idx >= len(task_list) || idx < 0 {
+					continue
+				}
+
+				task := &task_list[idx]
+
+				text_color := pt.colors.dark_text
+				if idx < (cur_task_idx + max_visible) {
+					color_idx := idx % (len(pt.colors.active) - 1)
+					draw_rect(&pt, Rect{pt.em, y_start, task_width + (pt.em * .5), padded_height}, pt.colors.active[color_idx])
+				} else {
+					text_color = pt.colors.text
+				}
+
+				draw_text(&pt, task.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, text_color)
+				idx += 1
+			}
+
+			list_y += pt.em
+			header_height = get_text_height(&pt, .H1Size, .DefaultFontBold)
+			draw_text(&pt, "Prior Tasks", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			list_y += (pt.em * 0.1)
+
+			idx = cur_task_idx - 1
+			if cur_task_idx < 0 {
+				idx = len(task_list) - 1
+			}
+
+			for i := list_max; i >= 0; i -= 1 {
+				task_height := get_text_height(&pt, .H1Size, .DefaultFont)
+				padded_height := task_height + pt.em
+				y_start := next_y(&pt, &list_y, padded_height)
+				text_y := y_start + center_x(list_y - y_start, padded_height)
+
+				if idx >= len(task_list) || idx < 0 {
+					continue
+				}
+
+				task := &task_list[idx]
+				draw_text(&pt, task.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
+				idx -= 1
+			}
 		}
 
 		flush_rects(&pt)
 		finish_frame(&pt)
+
+		free_all(context.temp_allocator)
 	}
 }

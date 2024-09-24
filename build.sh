@@ -8,3 +8,7 @@ elif [ "$1" = "opt" ]; then
 else
 	odin build src -out:bin/alarm -debug -keep-temp-files -strict-style -minimum-os-version:11.0
 fi
+
+if [[ "$OSTYPE" == "darwin"* ]]; then
+	./package_osx.sh
+fi

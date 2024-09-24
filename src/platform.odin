@@ -96,6 +96,8 @@ PlatformEventType :: enum {
 	KeyDown,
 	KeyUp,
 	Resize,
+	FocusGained,
+	FocusLost,
 	FileDropped,
 	More,
 	Exit,
@@ -164,6 +166,7 @@ Platform_State :: struct {
 	// Sleep State
 	awake: bool,
 	was_sleeping: bool,
+	has_focus: bool,
 
 	// Input State
 	mouse_pos:      Vec2,

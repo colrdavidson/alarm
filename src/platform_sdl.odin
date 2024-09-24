@@ -200,7 +200,7 @@ get_next_event :: proc(pt: ^Platform_State, wait: bool) -> PlatformEvent {
 	event: SDL.Event = ---
 	ret: bool
 	if wait {
-		ret = bool(SDL.WaitEvent(&event))
+		ret = bool(SDL.WaitEventTimeout(&event, 2000))
 	} else {
 		ret = bool(SDL.PollEvent(&event))
 	}
@@ -285,6 +285,12 @@ get_next_event :: proc(pt: ^Platform_State, wait: bool) -> PlatformEvent {
 
 					return PlatformEvent{type = .Resize, w = w, h = h}
 				}
+				case .FOCUS_GAINED: {
+					return PlatformEvent{type = .FocusGained}
+				}
+				case .FOCUS_LOST: {
+					return PlatformEvent{type = .FocusLost}
+				}
 			}
 		}
 	}
@@ -329,6 +335,6 @@ set_clipboard :: proc(gfx: ^GFX_Context, text: string) {
 	SDL.SetClipboardText(cstr_text)
 }
 
-set_window_title :: proc(gfx: ^GFX_Context, title: cstring) {
-	SDL.SetWindowTitle(gfx.window, title)
+set_window_title :: proc(pt: ^Platform_State, title: cstring) {
+	SDL.SetWindowTitle(pt.gfx.window, title)
 }
