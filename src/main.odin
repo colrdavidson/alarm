@@ -4,6 +4,7 @@ import "base:runtime"
 
 import "core:c"
 import "core:c/libc"
+import "core:sys/posix"
 
 import "core:os"
 import "core:fmt"
@@ -247,16 +248,25 @@ trunc_name :: proc(pt: ^Platform_State, name: string, max_chars: int, scale: Fon
 	}
 }
 
-main :: proc() {
-	now := time.now()
-	start_time := get_start_of_day(now)
-
-	task_list := make([dynamic]Task)
-
-	config, ok := os.read_entire_file_from_filename("cal.json")
+load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: string, now: time.Time, start_time: time.Time) {
+	config, ok := os.read_entire_file_from_filename(config_path)
 	if !ok {
-		fmt.printf("Unable to load <cal.json> calendar config\n")
-		os.exit(1)
+		// If we're a .app, try harder...
+		when ODIN_OS == .Darwin {
+			app_path := get_app_path()
+			app_dir := filepath.dir(app_path)
+			tmp_dir := filepath.join([]string{app_dir, "../../../.."})
+			real_dir := filepath.clean(tmp_dir)
+			second_try := filepath.join([]string{real_dir, config_path})
+			config, ok = os.read_entire_file_from_filename(second_try)
+			if !ok {
+				fmt.printf("Unable to load calendar config @ %s\n", second_try)
+				return
+			}
+		} else {
+			fmt.printf("Unable to load calendar config @ %s\n", config_path)
+			return
+		}
 	}
 
 	File :: struct {
@@ -285,7 +295,7 @@ main :: proc() {
 	err := json.unmarshal(config, &cal_config)
 	if err != nil {
 		fmt.printf("%v\n", err)
-		os.exit(1)
+		return
 	}
 
 	home_dir := os.get_env("HOME")
@@ -298,10 +308,10 @@ main :: proc() {
 		out, ok2 := os.read_entire_file_from_filename(path)
 		if !ok {
 			fmt.printf("Unable to find ical data at %s\n", path)
-			os.exit(1)
+			return
 		}
 
-		parse_ical_data(string(out), &task_list, now, file.redact)
+		parse_ical_data(string(out), task_list, now, file.redact)
 	}
 
 	crl := curl.easy_init()
@@ -316,7 +326,7 @@ main :: proc() {
 
 		curl.easy_perform(crl)
 		cal_data := strings.to_string(body_b)
-		parse_ical_data(cal_data, &task_list, now, url.redact)
+		parse_ical_data(cal_data, task_list, now, url.redact)
 
 		strings.builder_reset(&header_b)
 		strings.builder_reset(&body_b)
@@ -327,7 +337,7 @@ main :: proc() {
 		chunks := strings.fields(task.time)
 		if len(chunks) == 0 {
 			fmt.printf("Failed to parse task! %#v\n", task)
-			os.exit(1)
+			return
 		}
 
 		min := 0
@@ -336,13 +346,13 @@ main :: proc() {
 		hour, ok := strconv.parse_int(hour_min[0], 10)
 		if !ok {
 			fmt.printf("Failed to parse task hour! %s\n", task.time)
-			os.exit(1)
+			return
 		}
 		if len(hour_min) == 2 {
 			min, ok = strconv.parse_int(hour_min[1], 10)
 			if !ok {
 				fmt.printf("Failed to parse task min! %s\n", task.time)
-				os.exit(1)
+				return
 			}
 		}
 
@@ -363,15 +373,15 @@ main :: proc() {
 		case "saturday":  weekday = 6
 		case:
 			fmt.printf("Invalid task day! %s\n", task.day)
-			os.exit(1)
+			return
 		}
 
 		switch task.kind {
 		case "daily":
-			append(&task_list, Task{task.name, get_next_time(start_time, hour, min)})
+			append(task_list, Task{task.name, get_next_time(start_time, hour, min)})
 
 		case "weekly":
-			append(&task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
+			append(task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
 
 		case "monthly":
 			found_last := false
@@ -383,18 +393,25 @@ main :: proc() {
 			}
 			if !found_last {
 				fmt.printf("normal monthly not yet handled!\n")
-				os.exit(1)
+				return
 			}
 
-			append(&task_list, Task{task.name, get_next_last_day(start_time, weekday, hour, min)})
+			append(task_list, Task{task.name, get_next_last_day(start_time, weekday, hour, min)})
 
 		case "biweekly":
-			append(&task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
+			append(task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
 		case:
 			fmt.printf("Invalid task kind! %s\n", task.kind)
-			os.exit(1)
+			return
 		}
 	}
+}
+
+main :: proc() {
+	now := time.now()
+	start_time := get_start_of_day(now)
+
+	task_list := make([dynamic]Task)
 
 	pt := Platform_State{}
 	pt.p_height = 14
@@ -410,6 +427,8 @@ main :: proc() {
 
 	stored_height := pt.height
 	stored_width  := pt.width
+
+	load_tasks(&pt, &task_list, "cal.json", now, start_time)
 
 	task_sort_proc :: proc(i, j: Task) -> bool {
 		dur := time.diff(i.time, j.time)

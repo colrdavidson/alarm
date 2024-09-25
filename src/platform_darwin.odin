@@ -37,3 +37,15 @@ open_file_dialog :: proc() -> (string, bool) {
 
 	return "", false
 }
+
+get_app_path :: proc() -> string {
+	path_buf := [4096]u8{}
+	size : u32 = len(path_buf)
+	get_exe_path(raw_data(path_buf[:]), &size)
+	return string(cstring(raw_data(path_buf[:size])))
+}
+
+foreign import libc "system:System.framework"
+foreign libc {
+	@(link_name="_NSGetExecutablePath") get_exe_path :: proc(buf: rawptr, size: ^u32) -> int ---
+}

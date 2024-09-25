@@ -1,4 +1,4 @@
-#+build darwin, windows
+#+build darwin, windows, linux
 package main
 
 import "core:fmt"
@@ -337,4 +337,8 @@ set_clipboard :: proc(gfx: ^GFX_Context, text: string) {
 
 set_window_title :: proc(pt: ^Platform_State, title: cstring) {
 	SDL.SetWindowTitle(pt.gfx.window, title)
+}
+
+message_box :: proc(pt: ^Platform_State, title: cstring, message: cstring) {
+	SDL.ShowSimpleMessageBox(SDL.MESSAGEBOX_ERROR, title, message, pt.gfx.window)
 }
