@@ -4,15 +4,20 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:slice"
 
 import SDL "vendor:sdl2"
 import gl "vendor:OpenGL"
-
+import "core:math/linalg/glsl"
 
 GFX_Context :: struct {
 	default_cursor: ^SDL.Cursor,
 	pointer_cursor: ^SDL.Cursor,
 	text_cursor:    ^SDL.Cursor,
+
+	icon: ^SDL.Surface,
+	icon_width: int,
+	icon_height: int,
 
 	window: ^SDL.Window,
 }
@@ -153,6 +158,10 @@ create_context :: proc(pt: ^Platform_State, title: cstring, width, height: int) 
 	pt.gfx.default_cursor = SDL.CreateSystemCursor(.ARROW)
 	pt.gfx.pointer_cursor = SDL.CreateSystemCursor(.HAND)
 	pt.gfx.text_cursor    = SDL.CreateSystemCursor(.IBEAM)
+
+	pt.gfx.icon_width = 256
+	pt.gfx.icon_height = 256
+	pt.gfx.icon = SDL.CreateRGBSurfaceWithFormat(0, i32(pt.gfx.icon_width), i32(pt.gfx.icon_height), 32, u32(SDL.PixelFormatEnum.RGBA8888))
 
 	gl_context := SDL.GL_CreateContext(window)
 	if gl_context == nil {
@@ -341,4 +350,71 @@ set_window_title :: proc(pt: ^Platform_State, title: cstring) {
 
 message_box :: proc(pt: ^Platform_State, title: cstring, message: cstring) {
 	SDL.ShowSimpleMessageBox(SDL.MESSAGEBOX_ERROR, title, message, pt.gfx.window)
+}
+
+blit_clear :: proc(pt: ^Platform_State, color: BVec4) {
+	icon_buffer_bytes := slice.bytes_from_ptr(pt.gfx.icon.pixels, pt.gfx.icon_width * pt.gfx.icon_height * 4)
+	icon_buffer := transmute([]u32)(icon_buffer_bytes)
+
+	for x := 0; x < pt.gfx.icon_width; x += 1 {
+		for y := 0; y < pt.gfx.icon_height; y += 1 {
+			pixel := color
+
+			flat_pixel := u32(pixel.r) << 24 | u32(pixel.g) << 16 | u32(pixel.b) << 8 | 0
+			icon_buffer[(y * pt.gfx.icon_width) + x] = flat_pixel
+		}
+	}
+}
+
+bvec4_to_dvec3 :: proc(color: BVec4) -> glsl.dvec3 {
+	return glsl.dvec3{f64(color.r), f64(color.g), f64(color.b)}
+}
+
+bvec4_to_dvec4 :: proc(color: BVec4) -> glsl.dvec4 {
+	return glsl.dvec4{f64(color.r), f64(color.g), f64(color.b), f64(color.a)}
+}
+
+blit_circle :: proc(pt: ^Platform_State, radius: f64, fill_perc: f64, color: BVec4, cut: bool = false) {
+	icon_buffer_bytes := slice.bytes_from_ptr(pt.gfx.icon.pixels, pt.gfx.icon_width * pt.gfx.icon_height * 4)
+	icon_buffer := transmute([]u32)(icon_buffer_bytes)
+
+	center := glsl.dvec2{f64(pt.gfx.icon_width / 2), f64(pt.gfx.icon_height / 2)}
+	for x := 0; x < pt.gfx.icon_width; x += 1 {
+		for y := 0; y < pt.gfx.icon_height; y += 1 {
+			cur_flat_pix := icon_buffer[(y * pt.gfx.icon_width) + x]
+			old_pixel := BVec4{
+				u8((cur_flat_pix >> 24) & 0xFF),
+				u8((cur_flat_pix >> 16) & 0xFF),
+				u8((cur_flat_pix >> 8) & 0xFF),
+				u8((cur_flat_pix >> 0) & 0xFF),
+			}
+			pixel := color
+
+			width := radius * pt.dpr
+			frag_coord := glsl.dvec2{f64(x), f64(y)}
+			pos := (frag_coord - center) / width
+
+			angle := (glsl.atan2(pos.y, pos.x) / glsl.PI) * 0.5 + 0.5
+			angle = glsl.mod(angle + 0.75, 1.0)
+
+			alpha := 1.0 - glsl.step(0.5, glsl.length(pos))
+			alpha = (1.0 - glsl.step(fill_perc, angle)) * alpha
+
+			alpha_vec := glsl.dvec3{alpha, alpha, alpha}
+			vc := ((1.0 - alpha) * bvec4_to_dvec3(old_pixel)) + alpha*bvec4_to_dvec3(pixel)
+			vc = glsl.clamp(vc, 0, 255)
+			
+			a := ((1.0 - alpha) * f64(old_pixel.a)) + (255.0 * alpha)
+			if cut {
+				a = f64(old_pixel.a) * (255.0 * (1.0 - alpha))
+			}
+			a = glsl.clamp(a, 0, 255)
+
+			icon_buffer[(y * pt.gfx.icon_width) + x] = u32(vc.r) << 24 | u32(vc.g) << 16 | u32(vc.b) << 8 | u32(a)
+		}
+	}
+}
+
+set_window_icon :: proc(pt: ^Platform_State) {
+	SDL.SetWindowIcon(pt.gfx.window, pt.gfx.icon)
 }

@@ -412,6 +412,7 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 	}
 }
 
+
 main :: proc() {
 	now := time.now()
 	start_time := get_start_of_day(now)
@@ -450,6 +451,8 @@ main :: proc() {
 	max_visible := 4
 	list_max    := 5
 
+	
+
 	ev := PlatformEvent{}
 	main_loop: for {
 		event_loop: for {
@@ -476,6 +479,7 @@ main :: proc() {
 		}
 
 		setup_frame(&pt, int(stored_height), int(stored_width))
+		blit_clear(&pt, pt.colors.bg)
 
 		current_time := time.now()
 
@@ -504,13 +508,19 @@ main :: proc() {
 				perc := rem_sec / total_sec
 
 				color_idx := i % (len(pt.colors.active) - 1)
-				radius := ((pt.em * f64(cur_task_idx - i)) / 2) + side_min
+
+				ring_shrink := f64(cur_task_idx - i)
+				radius := ((pt.em * ring_shrink) / 2) + side_min
 				draw_circle(&pt, Vec2{pt.width / 2, pt.height / 2}, radius, perc, pt.colors.active[color_idx])
+
+				blit_circle(&pt, 128 * 0.75, perc, pt.colors.active[color_idx])
 			}
 
 			inner_center := Vec2{pt.width / 2, pt.height / 2}
 			inner_radius := side_min / 1.5
 			draw_circle(&pt, inner_center, inner_radius, 1, pt.colors.bg2)
+			blit_circle(&pt, 128.0 * 0.5, 1, pt.colors.bg2, true)
+			set_window_icon(&pt)
 
 			container := Rect{x_pos, y_pos, side_min, side_min}
 
