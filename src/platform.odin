@@ -657,3 +657,19 @@ finish_frame :: proc(pt: ^Platform_State) {
 	swap_buffers(&pt.gfx)
 	gl.Finish()
 }
+
+when ODIN_OS == .Windows {
+	foreign import _libc "system:libucrt.lib"
+} else when ODIN_OS == .Darwin {
+	foreign import _libc "system:System.framework"
+} else {
+	foreign import _libc "system:c"
+}
+
+when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+	@(default_calling_convention="c")
+	foreign _libc {
+		setenv :: proc(name: cstring, value: cstring, overwrite: i32) -> i32 ---
+		tzset  :: proc() ---
+	}
+}

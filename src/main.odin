@@ -60,8 +60,7 @@ ctime_to_time :: proc(_ctime: libc.time_t) -> time.Time {
 
 get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Time {
 	cur_ctime := time_to_ctime(start_time)
-	orig_ctm := libc.localtime(&cur_ctime)^
-	ctm := libc.localtime(&cur_ctime)^
+	ctm := libc.gmtime(&cur_ctime)^
 	
 	ctm.tm_hour = i32(hour)
 	ctm.tm_min = i32(minute)
@@ -78,7 +77,7 @@ get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Tim
 
 get_next_day_and_time :: proc(start_time: time.Time, weekday: int, hour: int, minute: int) -> time.Time {
 	cur_ctime := time_to_ctime(start_time)
-	ctm := libc.localtime(&cur_ctime)^
+	ctm := libc.gmtime(&cur_ctime)^
 
 	ctm.tm_hour = i32(hour)
 	ctm.tm_min = i32(minute)
@@ -167,19 +166,61 @@ curl_write_func :: proc "c" (ptr: rawptr, size: c.size_t, num: c.size_t, b: ^str
 	return bcount
 }
 
+parse_ical_ts :: proc(ts_str: string, tz: string) -> (out_ts: time.Time, ok: bool) {
+	if len(ts_str) < 15 {
+		return
+	}
+
+	year  := strconv.parse_int(ts_str[:4], 10) or_return
+	month := strconv.parse_int(ts_str[4:6], 10) or_return
+	day   := strconv.parse_int(ts_str[6:8], 10) or_return
+
+	hour   := strconv.parse_int(ts_str[9:11], 10) or_return
+	minute := strconv.parse_int(ts_str[11:13], 10) or_return
+	second := strconv.parse_int(ts_str[13:15], 10) or_return
+
+	if tz == "UTC" {
+		ts := time.components_to_time(year, month, day, hour, minute, second, 0) or_return
+		return ts, true
+	} else {
+		ctm := libc.tm{
+			tm_sec  = i32(second),
+			tm_min  = i32(minute),
+			tm_hour = i32(hour),
+			tm_mday = i32(day),
+			tm_mon  = i32(month - 1),
+			tm_year = i32(year - 1900),
+			tm_isdst = -1,
+		}
+
+		tz_cstr := strings.clone_to_cstring(tz, context.temp_allocator)
+		setenv("TZ", tz_cstr, 1)
+		tzset()
+
+		ctime := libc.mktime(&ctm)
+		ts := ctime_to_time(ctime)
+
+		return ts, true
+	}
+
+	return
+}
+
 parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, frontier: time.Time, redact: bool) {
 	data := _data
 
 	tmp_task := Task{}
-	nil_time := time.Time{_nsec = 0}
+	nil_time := time.Time{}
 	cal_name := ""
 
 	in_event := false
 	for line in strings.split_lines_iterator(&data) {
 		if line == "BEGIN:VEVENT" {
+			//fmt.printf(">\n")
 			in_event = true
 			continue
 		} else if line == "END:VEVENT" {
+			//fmt.printf("<\n")
 			delta := time.diff(frontier, tmp_task.time)
 			if tmp_task.time != nil_time && tmp_task.name != "" && delta >= 0 {
 				if redact {
@@ -187,6 +228,7 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, frontier: time.Tim
 				} else {
 					tmp_task.name = strings.clone(tmp_task.name)
 				}
+
 				append(tasks, tmp_task)
 			}
 
@@ -203,32 +245,46 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, frontier: time.Tim
 		if in_event {
 			summary_prefix := "SUMMARY:"
 			dtstart_prefix := "DTSTART"
+			recur_prefix := "RRULE:"
 
 			if strings.starts_with(line, summary_prefix) {
-				tmp_task.name = line[len(summary_prefix):]
+				name := line[len(summary_prefix):]
+				//fmt.printf("\tname: %s\n", name)
+
+				tmp_task.name = name
 			} else if strings.starts_with(line, dtstart_prefix) {
-				time_str := line[len(dtstart_prefix)+1:]
-				if time_str[0] != '2' || len(time_str) < 16 {
-					continue
+				dtstart_str := line[len(dtstart_prefix):]
+				//fmt.printf("\tstarts on: %s\n", dtstart_str)
+
+				time_str := ""
+				tz_str := ""
+				if dtstart_str[0] == ';' {
+					prop_str := line[len(dtstart_prefix)+1:]
+
+					prop_eq := strings.index_rune(prop_str, '=')
+					prop_end := strings.index_rune(prop_str, ':')
+
+					time_str = prop_str[prop_end+1:]
+					prop_type := prop_str[:prop_eq]
+					tz_str = prop_str[prop_eq+1:prop_end]
+
+					if prop_type != "TZID" {
+						continue
+					}
+				} else {
+					time_str = line[len(dtstart_prefix)+1:]
+					if time_str[15] != 'Z' {
+						continue
+					}
+					tz_str = "UTC"
 				}
-
-				// only handling utc timestamps
-				if time_str[15] != 'Z' {
-					continue
-				}
-
-				year  := strconv.parse_int(time_str[:4], 10) or_else -1
-				month := strconv.parse_int(time_str[4:6], 10) or_else -1
-				day   := strconv.parse_int(time_str[6:8], 10) or_else -1
-
-				hour   := strconv.parse_int(time_str[9:11], 10) or_else -1
-				minute := strconv.parse_int(time_str[11:13], 10) or_else -1
-				second := strconv.parse_int(time_str[13:15], 10) or_else -1
-
-				start_time, ok := time.components_to_time(year, month, day, hour, minute, second, 0)
+				start_time, ok := parse_ical_ts(time_str, tz_str)
 				if !ok { continue }
 
 				tmp_task.time = start_time
+			} else if strings.starts_with(line, recur_prefix) {
+				//rule_str := line[len(recur_prefix):]
+				//fmt.printf("\trule: %s\n", rule_str)
 			}
 		}
 	}
@@ -271,6 +327,13 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 			fmt.printf("Unable to load calendar config @ %s\n", config_path)
 			return
 		}
+	}
+
+	default_tz := strings.clone_to_cstring(string(libc.getenv("TZ")))
+	defer {
+		setenv("TZ", default_tz, 1)
+		tzset()
+		delete(default_tz)
 	}
 
 	File :: struct {
@@ -367,7 +430,7 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 
 		weekday := -1
 		switch task.day {
-		case "all":      weekday = -1
+		case "all":       weekday = -1
 		case "sunday":    weekday = 0
 		case "monday":    weekday = 1
 		case "tuesday":   weekday = 2
@@ -382,7 +445,6 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 
 		switch task.kind {
 		case "daily":
-			fmt.printf("working on %s\n", task.name)
 			append(task_list, Task{task.name, get_next_time(start_time, hour, min)})
 
 		case "weekly":
