@@ -68,12 +68,11 @@ get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Tim
 	ctm.tm_sec = 0
 
 	tmp_ctime := libc.mktime(&ctm)
-	if libc.difftime(tmp_ctime, cur_ctime) > 0 {
+	if libc.difftime(tmp_ctime, cur_ctime) < 0 {
 		ctm.tm_mday += 1
 	}
 
 	next_event := ctime_to_time(libc.mktime(&ctm))
-
 	return next_event
 }
 
@@ -383,6 +382,7 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 
 		switch task.kind {
 		case "daily":
+			fmt.printf("working on %s\n", task.name)
 			append(task_list, Task{task.name, get_next_time(start_time, hour, min)})
 
 		case "weekly":
