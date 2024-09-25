@@ -1,10 +1,21 @@
 package main
 
+import "base:runtime"
+
+import "core:c"
+import "core:c/libc"
+
 import "core:os"
 import "core:fmt"
+import "core:net"
 import "core:slice"
-import "core:c/libc"
+import "core:strings"
 import "core:time"
+import "core:time/datetime"
+import "core:flags"
+
+
+import "libs:curl"
 
 Task :: struct {
 	name: string,
@@ -47,6 +58,7 @@ ctime_to_time :: proc(_ctime: libc.time_t) -> time.Time {
 
 get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Time {
 	cur_ctime := time_to_ctime(start_time)
+	orig_ctm := libc.localtime(&cur_ctime)^
 	ctm := libc.localtime(&cur_ctime)^
 	
 	ctm.tm_hour = i32(hour)
@@ -54,7 +66,7 @@ get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Tim
 	ctm.tm_sec = 0
 
 	tmp_ctime := libc.mktime(&ctm)
-	if libc.difftime(tmp_ctime, cur_ctime) < 0 {
+	if libc.difftime(tmp_ctime, cur_ctime) > 0 {
 		ctm.tm_mday += 1
 	}
 
@@ -132,7 +144,51 @@ get_next_last_day :: proc(start_time: time.Time, weekday, hour, minute: int) -> 
 	return next_event
 }
 
+get_start_of_day :: proc(start_time: time.Time) -> time.Time {
+	cur_ctime := time_to_ctime(start_time)
+	ctm := libc.localtime(&cur_ctime)^
+
+	ctm.tm_hour = 0
+	ctm.tm_min  = 0
+	ctm.tm_sec  = 0
+
+	ctm = normalize_tm(ctm)
+	return ctime_to_time(libc.mktime(&ctm))
+}
+
+Cmd_Options :: struct {
+	ical_url: string `args:"required,name=cal" usage:"iCal URL"`,
+}
+opt := Cmd_Options{}
+
+curl_write_func :: proc "c" (ptr: rawptr, size: c.size_t, num: c.size_t, b: ^strings.Builder) -> c.size_t {
+	context = runtime.default_context()
+
+	bcount := size * num
+
+	arr := slice.bytes_from_ptr(ptr, int(bcount))
+	strings.write_bytes(b, arr)
+	return bcount
+}
+
 main :: proc() {
+	flags.parse_or_exit(&opt, os.args, .Unix)
+
+	header_b := strings.builder_make()
+	body_b := strings.builder_make()
+
+	crl := curl.easy_init()
+	curl.easy_setopt(crl, curl.OPT_URL, opt.ical_url)
+	curl.easy_setopt(crl, curl.OPT_NOPROGRESS, 1)
+	curl.easy_setopt(crl, curl.OPT_WRITEFUNCTION, curl_write_func)
+	curl.easy_setopt(crl, curl.OPT_WRITEDATA, &body_b)
+	curl.easy_setopt(crl, curl.OPT_HEADERDATA, &header_b)
+
+	curl.easy_perform(crl)
+	curl.easy_cleanup(crl)
+
+	fmt.printf("%s\n", strings.to_string(body_b))
+
 	pt := Platform_State{}
 	pt.p_height = 14
 	pt.h1_height = 18
@@ -148,9 +204,10 @@ main :: proc() {
 	stored_height := pt.height
 	stored_width  := pt.width
 
-	start_time := time.now()
-	fmt.printf("%v | NOW\n", start_time)
+	now := time.now()
+	start_time := get_start_of_day(now)
 
+	wakeup := get_next_time(start_time, 2, 0)
 	task_list := []Task{
 		{"Wake Up",                    get_next_time(start_time, 11, 0)},
 		{"Bed Time",                   get_next_time(start_time, 2, 0)},
@@ -159,26 +216,14 @@ main :: proc() {
 		{"Handmade Cities Meetup",     get_next_last_day(start_time, 6, 15, 0)},
 	}
 
-/*
-	wakeup := get_next_time(start_time, 6, 0)
-	task_list := []Task{
-		{"Wake Up",                    wakeup},
-		{"Read My Blogs",              time.time_add(wakeup, 1 * time.Hour)},
-		{"Hop over to Ground Central", time.time_add(wakeup, (2 * time.Hour) + (30 * time.Minute))},
-		{"Time for Standup",           time.time_add(wakeup, (4 * time.Hour))},
-		{"News Blast",                 time.time_add(wakeup, (5 * time.Hour) + (30 * time.Minute))},
-		{"Vegan Bolognese",            time.time_add(wakeup, (6 * time.Hour))},
-		{"Call it a Day",              time.time_add(wakeup, (14 * time.Hour) + (30 * time.Minute))},
-		{"Happy Hour",                 time.time_add(wakeup, (15 * time.Hour))},
-		{"Back In Bed",                time.time_add(wakeup, (25 * time.Hour) + (37 * time.Minute))},
-	}
-*/
-
 	task_sort_proc :: proc(i, j: Task) -> bool {
 		dur := time.diff(i.time, j.time)
 		return dur > 0
 	}
 	slice.sort_by(task_list[:], task_sort_proc)
+
+	fmt.printf("%v | NOW\n", now)
+	fmt.printf("%v | WHEEL START\n", start_time)
 	for task, idx in task_list {
 		fmt.printf("%v | %s\n", task.time, task.name)
 	}
