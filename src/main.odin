@@ -253,7 +253,12 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 	if !ok {
 		// If we're a .app, try harder...
 		when ODIN_OS == .Darwin {
-			app_path := get_app_path()
+			path_buf := [8192]u8{}
+			app_path, ok2 := get_app_path(path_buf[:])
+			if !ok2 {
+				return
+			}
+
 			app_dir := filepath.dir(app_path)
 			tmp_dir := filepath.join([]string{app_dir, "../../../.."})
 			real_dir := filepath.clean(tmp_dir)

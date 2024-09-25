@@ -38,11 +38,10 @@ open_file_dialog :: proc() -> (string, bool) {
 	return "", false
 }
 
-get_app_path :: proc() -> string {
-	path_buf := [4096]u8{}
-	size : u32 = len(path_buf)
-	get_exe_path(raw_data(path_buf[:]), &size)
-	return string(cstring(raw_data(path_buf[:size])))
+get_app_path :: proc(buf: []u8) -> (string, bool) {
+	size : u32 = u32(len(buf))
+	ret := get_exe_path(raw_data(buf[:]), &size)
+	return string(cstring(raw_data(buf[:size]))), ret == 0
 }
 
 foreign import libc "system:System.framework"
