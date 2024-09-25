@@ -2,6 +2,8 @@ bin
 *.swp
 .DS_Store
 *.zip
+*.ics
+cal.json
 
 alarm_pkg
 collect_builds.sh

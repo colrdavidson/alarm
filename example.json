@@ -1,0 +1,15 @@
+{
+	"files": [
+		{"path": "foo.ics", "redact": false}
+	],
+	"urls": [
+		{"path": "https://localhost:8080/foo.ics", "redact": true}
+	],
+	"tasks": [
+		{"kind": "wake",      "name": "Wake Up",                "day": "all",       "time": "11:30 AM", "tz": "local",               "started": "", "modifiers": ["wake"]},
+		{"kind": "daily",     "name": "Bed Time",               "day": "all",       "time":     "2 AM", "tz": "local",               "started": "", "modifiers": []},
+		{"kind": "weekly",    "name": "HMN Admin Meeting",      "day": "monday",    "time":     "3 PM", "tz": "America/Los_Angeles", "started": "", "modifiers": []},
+		{"kind": "monthly",   "name": "Handmade Cities Meetup", "day": "saturday",  "time":     "3 PM", "tz": "America/Los_Angeles", "started": "", "modifiers": ["last"]},
+		{"kind": "biweekly",  "name": "HM Co-Working Meetup",   "day": "wednesday", "time":     "3 PM", "tz": "America/Los_Angeles", "started": "2024-09-25", "modifiers": []}
+	]
+}

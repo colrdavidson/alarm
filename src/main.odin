@@ -10,10 +10,11 @@ import "core:fmt"
 import "core:net"
 import "core:slice"
 import "core:strings"
+import "core:strconv"
 import "core:time"
 import "core:time/datetime"
-import "core:flags"
-
+import "core:path/filepath"
+import "core:encoding/json"
 
 import "libs:curl"
 
@@ -156,11 +157,6 @@ get_start_of_day :: proc(start_time: time.Time) -> time.Time {
 	return ctime_to_time(libc.mktime(&ctm))
 }
 
-Cmd_Options :: struct {
-	ical_url: string `args:"required,name=cal" usage:"iCal URL"`,
-}
-opt := Cmd_Options{}
-
 curl_write_func :: proc "c" (ptr: rawptr, size: c.size_t, num: c.size_t, b: ^strings.Builder) -> c.size_t {
 	context = runtime.default_context()
 
@@ -171,23 +167,234 @@ curl_write_func :: proc "c" (ptr: rawptr, size: c.size_t, num: c.size_t, b: ^str
 	return bcount
 }
 
-main :: proc() {
-	flags.parse_or_exit(&opt, os.args, .Unix)
+parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, frontier: time.Time, redact: bool) {
+	data := _data
 
-	header_b := strings.builder_make()
-	body_b := strings.builder_make()
+	tmp_task := Task{}
+	nil_time := time.Time{_nsec = 0}
+	cal_name := ""
+
+	in_event := false
+	for line in strings.split_lines_iterator(&data) {
+		if line == "BEGIN:VEVENT" {
+			in_event = true
+			continue
+		} else if line == "END:VEVENT" {
+			delta := time.diff(frontier, tmp_task.time)
+			if tmp_task.time != nil_time && tmp_task.name != "" && delta >= 0 {
+				if redact {
+					tmp_task.name = fmt.aprintf("Event from %s", cal_name)
+				} else {
+					tmp_task.name = strings.clone(tmp_task.name)
+				}
+				append(tasks, tmp_task)
+			}
+
+			tmp_task = Task{}
+			in_event = false
+			continue
+		} else if cal_name == "" {
+			cal_name_prefix := "X-WR-CALNAME:"
+			if strings.starts_with(line, cal_name_prefix) {
+				cal_name = line[len(cal_name_prefix):]
+			}
+		}
+
+		if in_event {
+			summary_prefix := "SUMMARY:"
+			dtstart_prefix := "DTSTART"
+
+			if strings.starts_with(line, summary_prefix) {
+				tmp_task.name = line[len(summary_prefix):]
+			} else if strings.starts_with(line, dtstart_prefix) {
+				time_str := line[len(dtstart_prefix)+1:]
+				if time_str[0] != '2' || len(time_str) < 16 {
+					continue
+				}
+
+				// only handling utc timestamps
+				if time_str[15] != 'Z' {
+					continue
+				}
+
+				year  := strconv.parse_int(time_str[:4], 10) or_else -1
+				month := strconv.parse_int(time_str[4:6], 10) or_else -1
+				day   := strconv.parse_int(time_str[6:8], 10) or_else -1
+
+				hour   := strconv.parse_int(time_str[9:11], 10) or_else -1
+				minute := strconv.parse_int(time_str[11:13], 10) or_else -1
+				second := strconv.parse_int(time_str[13:15], 10) or_else -1
+
+				start_time, ok := time.components_to_time(year, month, day, hour, minute, second, 0)
+				if !ok { continue }
+
+				tmp_task.time = start_time
+			}
+		}
+	}
+}
+
+trunc_name :: proc(pt: ^Platform_State, name: string, max_chars: int, scale: FontSize, font_type: FontType) -> string {
+	name_width := measure_text(pt, name, scale, font_type)
+	ellipsis_width := measure_text(pt, "...", scale, font_type)
+	approx_max_width := f64(max_chars) * pt.em
+
+	if (name_width + ellipsis_width) > approx_max_width {
+		str_end := min(len(name), max_chars+4)
+		return fmt.tprintf("%s...", name[:str_end])
+	} else {
+		return fmt.tprintf(name)
+	}
+}
+
+main :: proc() {
+	now := time.now()
+	start_time := get_start_of_day(now)
+
+	task_list := make([dynamic]Task)
+
+	config, ok := os.read_entire_file_from_filename("cal.json")
+	if !ok {
+		fmt.printf("Unable to load <cal.json> calendar config\n")
+		os.exit(1)
+	}
+
+	File :: struct {
+		path: string,
+		redact: bool,
+	}
+	Url :: struct {
+		path: string,
+		redact: bool,
+	}
+	TaskExpr :: struct {
+		kind: string,
+		name: string,
+		day: string,
+		time: string,
+		tz: string,
+		started: string,
+		modifiers: []string,
+	}
+	CalConfig :: struct {
+		files: []File,
+		urls:  []Url,
+		tasks: []TaskExpr,
+	}
+	cal_config := CalConfig{}
+	err := json.unmarshal(config, &cal_config)
+	if err != nil {
+		fmt.printf("%v\n", err)
+		os.exit(1)
+	}
+
+	home_dir := os.get_env("HOME")
+	for file in cal_config.files {
+		path := ""
+		if file.path[0] == '~' {
+			path = fmt.tprintf("%s/%s", home_dir, file.path[1:])
+		}
+
+		out, ok2 := os.read_entire_file_from_filename(path)
+		if !ok {
+			fmt.printf("Unable to find ical data at %s\n", path)
+			os.exit(1)
+		}
+
+		parse_ical_data(string(out), &task_list, now, file.redact)
+	}
 
 	crl := curl.easy_init()
-	curl.easy_setopt(crl, curl.OPT_URL, opt.ical_url)
-	curl.easy_setopt(crl, curl.OPT_NOPROGRESS, 1)
-	curl.easy_setopt(crl, curl.OPT_WRITEFUNCTION, curl_write_func)
-	curl.easy_setopt(crl, curl.OPT_WRITEDATA, &body_b)
-	curl.easy_setopt(crl, curl.OPT_HEADERDATA, &header_b)
+	header_b := strings.builder_make()
+	body_b := strings.builder_make()
+	for url in cal_config.urls {
+		curl.easy_setopt(crl, curl.OPT_URL, url.path)
+		curl.easy_setopt(crl, curl.OPT_NOPROGRESS, 1)
+		curl.easy_setopt(crl, curl.OPT_WRITEFUNCTION, curl_write_func)
+		curl.easy_setopt(crl, curl.OPT_WRITEDATA, &body_b)
+		curl.easy_setopt(crl, curl.OPT_HEADERDATA, &header_b)
 
-	curl.easy_perform(crl)
+		curl.easy_perform(crl)
+		cal_data := strings.to_string(body_b)
+		parse_ical_data(cal_data, &task_list, now, url.redact)
+
+		strings.builder_reset(&header_b)
+		strings.builder_reset(&body_b)
+	}
 	curl.easy_cleanup(crl)
 
-	fmt.printf("%s\n", strings.to_string(body_b))
+	for task in cal_config.tasks {
+		chunks := strings.fields(task.time)
+		if len(chunks) == 0 {
+			fmt.printf("Failed to parse task! %#v\n", task)
+			os.exit(1)
+		}
+
+		min := 0
+		hour_min := strings.split(chunks[0], ":")
+
+		hour, ok := strconv.parse_int(hour_min[0], 10)
+		if !ok {
+			fmt.printf("Failed to parse task hour! %s\n", task.time)
+			os.exit(1)
+		}
+		if len(hour_min) == 2 {
+			min, ok = strconv.parse_int(hour_min[1], 10)
+			if !ok {
+				fmt.printf("Failed to parse task min! %s\n", task.time)
+				os.exit(1)
+			}
+		}
+
+		am_pm_str := chunks[len(chunks)-1]
+		if am_pm_str == "PM" {
+			hour += 12
+		}
+
+		weekday := -1
+		switch task.day {
+		case "all":      weekday = -1
+		case "sunday":    weekday = 0
+		case "monday":    weekday = 1
+		case "tuesday":   weekday = 2
+		case "wednesday": weekday = 3
+		case "thursday":  weekday = 4
+		case "friday":    weekday = 5
+		case "saturday":  weekday = 6
+		case:
+			fmt.printf("Invalid task day! %s\n", task.day)
+			os.exit(1)
+		}
+
+		switch task.kind {
+		case "daily":
+			append(&task_list, Task{task.name, get_next_time(start_time, hour, min)})
+
+		case "weekly":
+			append(&task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
+
+		case "monthly":
+			found_last := false
+			for mod in task.modifiers {
+				if mod == "last" {
+					found_last = true
+					break
+				}
+			}
+			if !found_last {
+				fmt.printf("normal monthly not yet handled!\n")
+				os.exit(1)
+			}
+
+			append(&task_list, Task{task.name, get_next_last_day(start_time, weekday, hour, min)})
+
+		case "biweekly":
+			append(&task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
+		case:
+			fmt.printf("Invalid task kind! %s\n", task.kind)
+			os.exit(1)
+		}
+	}
 
 	pt := Platform_State{}
 	pt.p_height = 14
@@ -203,18 +410,6 @@ main :: proc() {
 
 	stored_height := pt.height
 	stored_width  := pt.width
-
-	now := time.now()
-	start_time := get_start_of_day(now)
-
-	wakeup := get_next_time(start_time, 2, 0)
-	task_list := []Task{
-		{"Wake Up",                    get_next_time(start_time, 11, 0)},
-		{"Bed Time",                   get_next_time(start_time, 2, 0)},
-		{"HMN Admin Meeting",          get_next_day_and_time(start_time, 1, 15, 0)},
-		{"Handmade Co-Working Meetup", get_next_day_and_time(start_time, 3, 15, 0)},
-		{"Handmade Cities Meetup",     get_next_last_day(start_time, 6, 15, 0)},
-	}
 
 	task_sort_proc :: proc(i, j: Task) -> bool {
 		dur := time.diff(i.time, j.time)
@@ -273,7 +468,8 @@ main :: proc() {
 			cur_task_idx = idx
 		}
 
-		task_width := 0.0
+		task_chars := 20
+		task_width := f64(task_chars) * pt.em
 		if cur_task_idx >= 0 {
 			start_idx := min(cur_task_idx + max_visible - 1, len(task_list) - 1)
 			for i := start_idx; i >= cur_task_idx; i -= 1 {
@@ -286,8 +482,6 @@ main :: proc() {
 				color_idx := i % (len(pt.colors.active) - 1)
 				radius := ((pt.em * f64(cur_task_idx - i)) / 2) + side_min
 				draw_circle(&pt, Vec2{pt.width / 2, pt.height / 2}, radius, perc, pt.colors.active[color_idx])
-
-				task_width = max(measure_text(&pt, task.name, .H1Size, .DefaultFont), task_width)
 			}
 
 			inner_center := Vec2{pt.width / 2, pt.height / 2}
@@ -367,7 +561,8 @@ main :: proc() {
 					text_color = pt.colors.text
 				}
 
-				draw_text(&pt, task.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, text_color)
+				short_name := trunc_name(&pt, task.name, task_chars, .H1Size, .DefaultFont)
+				draw_text(&pt, short_name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, text_color)
 				idx += 1
 			}
 
