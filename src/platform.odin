@@ -670,6 +670,7 @@ when ODIN_OS == .Linux || ODIN_OS == .Darwin {
 	@(default_calling_convention="c")
 	foreign _libc {
 		setenv :: proc(name: cstring, value: cstring, overwrite: i32) -> i32 ---
+		unsetenv :: proc(name: cstring) -> i32 ---
 		tzset  :: proc() ---
 	}
 }

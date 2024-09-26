@@ -19,8 +19,58 @@ import "core:encoding/json"
 
 import "libs:curl"
 
+TaskDay :: enum {
+	Sunday    = 0,
+	Monday    = 1,
+	Tuesday   = 2,
+	Wednesday = 3,
+	Thursday  = 4,
+	Friday    = 5,
+	Saturday  = 6,
+
+	None = 7,
+}
+TaskMonth :: enum {
+	January   = 0,
+	February  = 1,
+	March     = 2,
+	April     = 3,
+	June      = 4,
+	July      = 5,
+	August    = 6,
+	September = 7,
+	October   = 9,
+	November  = 10,
+	December  = 11,
+}
+
+TaskFreq :: enum {
+	Once = 0,
+	Secondly,
+	Minutely,
+	Hourly,
+	Daily,
+	Weekly,
+	Monthly,
+	Yearly,
+}
+
 Task :: struct {
-	name: string,
+	name:           string,
+
+	start_time:  time.Time,
+	tz:            cstring,
+
+	freq:         TaskFreq,
+	days: [dynamic]TaskDay,
+	months:    []TaskMonth,
+
+	interval:          int,
+	count:             int,
+}
+
+Event :: struct {
+	name:    string,
 	time: time.Time,
 }
 
@@ -58,40 +108,50 @@ ctime_to_time :: proc(_ctime: libc.time_t) -> time.Time {
 	return ctm_to_time(ctm)
 }
 
-get_next_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Time {
+to_local_time :: proc(t: time.Time) -> time.Time {
+	cur_ctime := time_to_ctime(t)
+	ctm := libc.localtime(&cur_ctime)^
+	return ctm_to_time(ctm)
+}
+time_to_str :: proc(t: time.Time) -> string {
+	year, month, day := time.date(t)
+	hour, minute, second := time.clock_from_time(t)
+
+	am_pm_str := "AM"
+	if hour > 12 {
+		am_pm_str = "PM"
+		hour -= 12
+	}
+
+	return fmt.tprintf("%02d-%02d-%04d @ %02d:%02d %s local", month, day, year, hour, minute, am_pm_str)
+}
+
+set_time :: proc(start_time: time.Time, hour: int, minute: int) -> time.Time {
 	cur_ctime := time_to_ctime(start_time)
 	ctm := libc.gmtime(&cur_ctime)^
 	
 	ctm.tm_hour = i32(hour)
 	ctm.tm_min = i32(minute)
 	ctm.tm_sec = 0
-
-	tmp_ctime := libc.mktime(&ctm)
-	if libc.difftime(tmp_ctime, cur_ctime) < 0 {
-		ctm.tm_mday += 1
-	}
+	ctm.tm_isdst = -1
 
 	next_event := ctime_to_time(libc.mktime(&ctm))
 	return next_event
 }
 
-get_next_day_and_time :: proc(start_time: time.Time, weekday: int, hour: int, minute: int) -> time.Time {
+set_weekday_and_time :: proc(start_time: time.Time, weekday: int, hour: int, minute: int) -> time.Time {
 	cur_ctime := time_to_ctime(start_time)
 	ctm := libc.gmtime(&cur_ctime)^
 
 	ctm.tm_hour = i32(hour)
 	ctm.tm_min = i32(minute)
 	ctm.tm_sec = 0
+	ctm.tm_isdst = -1
 
 	day_delta := i32(weekday) - ctm.tm_wday
-	if day_delta == 0 {
-		tmp_ctime := libc.mktime(&ctm)
-		if libc.difftime(tmp_ctime, cur_ctime) < 0 {
-			ctm.tm_mday += 7
-		}
-	} else if day_delta < 0 {
+	if day_delta < 0 {
 		ctm.tm_mday += (7 + day_delta)
-	} else {
+	} else if day_delta > 0 {
 		ctm.tm_mday += day_delta
 	}
 
@@ -166,73 +226,70 @@ curl_write_func :: proc "c" (ptr: rawptr, size: c.size_t, num: c.size_t, b: ^str
 	return bcount
 }
 
-parse_ical_ts :: proc(ts_str: string, tz: string) -> (out_ts: time.Time, ok: bool) {
-	if len(ts_str) < 15 {
+parse_ical_ts :: proc(ts_str: string) -> (out_ts: time.Time, tz: string, ok: bool) {
+	time_str := ""
+	tz_str := ""
+	if ts_str[0] == ';' {
+		prop_str := ts_str[1:]
+
+		prop_eq := strings.index_rune(prop_str, '=')
+		prop_end := strings.index_rune(prop_str, ':')
+
+		time_str = prop_str[prop_end+1:]
+		prop_type := prop_str[:prop_eq]
+		tz_str = prop_str[prop_eq+1:prop_end]
+
+		if prop_type != "TZID" {
+			return
+		}
+	} else {
+		time_str = ts_str[1:]
+		if time_str[15] != 'Z' {
+			return
+		}
+		tz_str = "UTC"
+	}
+
+	if len(time_str) < 15 {
 		return
 	}
 
-	year  := strconv.parse_int(ts_str[:4], 10) or_return
-	month := strconv.parse_int(ts_str[4:6], 10) or_return
-	day   := strconv.parse_int(ts_str[6:8], 10) or_return
+	year  := strconv.parse_int(time_str[:4], 10) or_return
+	month := strconv.parse_int(time_str[4:6], 10) or_return
+	day   := strconv.parse_int(time_str[6:8], 10) or_return
 
-	hour   := strconv.parse_int(ts_str[9:11], 10) or_return
-	minute := strconv.parse_int(ts_str[11:13], 10) or_return
-	second := strconv.parse_int(ts_str[13:15], 10) or_return
+	hour   := strconv.parse_int(time_str[9:11], 10) or_return
+	minute := strconv.parse_int(time_str[11:13], 10) or_return
+	second := strconv.parse_int(time_str[13:15], 10) or_return
 
-	if tz == "UTC" {
-		ts := time.components_to_time(year, month, day, hour, minute, second, 0) or_return
-		return ts, true
-	} else {
-		ctm := libc.tm{
-			tm_sec  = i32(second),
-			tm_min  = i32(minute),
-			tm_hour = i32(hour),
-			tm_mday = i32(day),
-			tm_mon  = i32(month - 1),
-			tm_year = i32(year - 1900),
-			tm_isdst = -1,
-		}
-
-		tz_cstr := strings.clone_to_cstring(tz, context.temp_allocator)
-		setenv("TZ", tz_cstr, 1)
-		tzset()
-
-		ctime := libc.mktime(&ctm)
-		ts := ctime_to_time(ctime)
-
-		return ts, true
-	}
-
-	return
+	ts := time.components_to_time(year, month, day, hour, minute, second, 0) or_return
+	return ts, tz_str, true
 }
 
-parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, frontier: time.Time, redact: bool) {
+CalEvent :: struct {
+	summary:  string,
+	dtstart:  string,
+	dtend:    string,
+	rrule:    string,
+	sequence:    int,
+	uid:      string,
+}
+
+parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
 	data := _data
 
-	tmp_task := Task{}
-	nil_time := time.Time{}
 	cal_name := ""
+	cal_events := make([dynamic]CalEvent)
+	ev := CalEvent{}
 
 	in_event := false
 	for line in strings.split_lines_iterator(&data) {
 		if line == "BEGIN:VEVENT" {
-			//fmt.printf(">\n")
 			in_event = true
+			ev = CalEvent{sequence = -1}
 			continue
 		} else if line == "END:VEVENT" {
-			//fmt.printf("<\n")
-			delta := time.diff(frontier, tmp_task.time)
-			if tmp_task.time != nil_time && tmp_task.name != "" && delta >= 0 {
-				if redact {
-					tmp_task.name = fmt.aprintf("Event from %s", cal_name)
-				} else {
-					tmp_task.name = strings.clone(tmp_task.name)
-				}
-
-				append(tasks, tmp_task)
-			}
-
-			tmp_task = Task{}
+			append(&cal_events, ev)
 			in_event = false
 			continue
 		} else if cal_name == "" {
@@ -245,48 +302,73 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, frontier: time.Tim
 		if in_event {
 			summary_prefix := "SUMMARY:"
 			dtstart_prefix := "DTSTART"
-			recur_prefix := "RRULE:"
+			dtend_prefix := "DTEND"
+			rrule_prefix := "RRULE:"
+			sequence_prefix := "SEQUENCE:"
+			uid_prefix := "UID:"
 
 			if strings.starts_with(line, summary_prefix) {
-				name := line[len(summary_prefix):]
-				//fmt.printf("\tname: %s\n", name)
+				ev.summary = line[len(summary_prefix):]
 
-				tmp_task.name = name
 			} else if strings.starts_with(line, dtstart_prefix) {
-				dtstart_str := line[len(dtstart_prefix):]
-				//fmt.printf("\tstarts on: %s\n", dtstart_str)
+				ev.dtstart = line[len(dtstart_prefix):]
 
-				time_str := ""
-				tz_str := ""
-				if dtstart_str[0] == ';' {
-					prop_str := line[len(dtstart_prefix)+1:]
+			} else if strings.starts_with(line, dtend_prefix) {
+				ev.dtstart = line[len(dtend_prefix):]
 
-					prop_eq := strings.index_rune(prop_str, '=')
-					prop_end := strings.index_rune(prop_str, ':')
+			} else if strings.starts_with(line, rrule_prefix) {
+				ev.rrule = line[len(rrule_prefix):]
 
-					time_str = prop_str[prop_end+1:]
-					prop_type := prop_str[:prop_eq]
-					tz_str = prop_str[prop_eq+1:prop_end]
-
-					if prop_type != "TZID" {
-						continue
-					}
-				} else {
-					time_str = line[len(dtstart_prefix)+1:]
-					if time_str[15] != 'Z' {
-						continue
-					}
-					tz_str = "UTC"
+			} else if strings.starts_with(line, sequence_prefix) {
+				seq_str := line[len(sequence_prefix):]
+				seq, ok := strconv.parse_int(seq_str, 10)
+				if !ok {
+					fmt.printf("Invalid sequence! %s\n", seq_str)
+					return
 				}
-				start_time, ok := parse_ical_ts(time_str, tz_str)
-				if !ok { continue }
+				ev.sequence = seq
 
-				tmp_task.time = start_time
-			} else if strings.starts_with(line, recur_prefix) {
-				//rule_str := line[len(recur_prefix):]
-				//fmt.printf("\trule: %s\n", rule_str)
+			} else if strings.starts_with(line, uid_prefix) {
+				ev.uid = line[len(uid_prefix):]
 			}
 		}
+	}
+
+	// Collect all unique ids with highest seq
+	// (Keep only the latest versions of events)
+	uid_map := make(map[string]int)
+	for ev, idx in cal_events {
+		ev_idx, ok := uid_map[ev.uid]
+		if ok {
+			old_ev := cal_events[ev_idx]
+			if old_ev.sequence > ev.sequence {
+				continue
+			}
+		}
+		uid_map[ev.uid] = idx
+	}
+
+	deduped_events := make([dynamic]CalEvent)
+	for uid, ev_idx in uid_map {
+		ev := cal_events[ev_idx]
+		append(&deduped_events, ev)
+	}
+
+	// Chug through and parse out timestamps and rules
+	for ev in deduped_events {
+		start_time, tz_str, ok := parse_ical_ts(ev.dtstart)
+		if !ok {
+			fmt.printf("Failed to parse %v - %v\n", ev.summary, ev.dtstart)
+			continue
+		}
+
+		task := Task{
+			name = ev.summary,
+			start_time = start_time,
+			tz = strings.clone_to_cstring(tz_str),
+		}
+
+		append(tasks, task)
 	}
 }
 
@@ -303,7 +385,7 @@ trunc_name :: proc(pt: ^Platform_State, name: string, max_chars: int, scale: Fon
 	}
 }
 
-load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: string, now: time.Time, start_time: time.Time) {
+load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 	config, ok := os.read_entire_file_from_filename(config_path)
 	if !ok {
 		// If we're a .app, try harder...
@@ -329,13 +411,6 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 		}
 	}
 
-	default_tz := strings.clone_to_cstring(string(libc.getenv("TZ")))
-	defer {
-		setenv("TZ", default_tz, 1)
-		tzset()
-		delete(default_tz)
-	}
-
 	File :: struct {
 		path: string,
 		redact: bool,
@@ -345,13 +420,14 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 		redact: bool,
 	}
 	TaskExpr :: struct {
-		kind: string,
-		name: string,
-		day: string,
-		time: string,
-		tz: string,
-		started: string,
-		modifiers: []string,
+		name:         string,
+		start_time:   string,
+		freq:         string,
+		days:       []string,
+		tz:           string,
+		interval:        int,
+		count:           int,
+		modifiers:  []string,
 	}
 	CalConfig :: struct {
 		files: []File,
@@ -378,9 +454,10 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 			return
 		}
 
-		parse_ical_data(string(out), task_list, now, file.redact)
+		parse_ical_data(string(out), task_list, file.redact)
 	}
 
+/*
 	crl := curl.easy_init()
 	header_b := strings.builder_make()
 	body_b := strings.builder_make()
@@ -393,87 +470,174 @@ load_tasks :: proc(pt: ^Platform_State, task_list: ^[dynamic]Task, config_path: 
 
 		curl.easy_perform(crl)
 		cal_data := strings.to_string(body_b)
-		parse_ical_data(cal_data, task_list, now, url.redact)
+		parse_ical_data(cal_data, task_list, url.redact)
 
 		strings.builder_reset(&header_b)
 		strings.builder_reset(&body_b)
 	}
 	curl.easy_cleanup(crl)
+*/
 
 	for task in cal_config.tasks {
-		chunks := strings.fields(task.time)
-		if len(chunks) == 0 {
+		chunks := strings.split(task.start_time, "@")
+		if len(chunks) != 2 {
 			fmt.printf("Failed to parse task! %#v\n", task)
 			return
 		}
 
-		min := 0
-		hour_min := strings.split(chunks[0], ":")
+		year := 1900
+		month := 1
+		day := 1
+		ymd := strings.split(chunks[0], "-")
+		if len(ymd) != 3 && len(ymd) != 1 {
+			fmt.printf("Invalid date format! %s\n", chunks[0])
+			return
+		}
+		if len(ymd) == 3 {
+			year_str  := strings.trim_left(strings.trim_space(ymd[0]), "0")
+			month_str := strings.trim_left(strings.trim_space(ymd[1]), "0")
+			day_str   := strings.trim_left(strings.trim_space(ymd[2]), "0")
 
-		hour, ok := strconv.parse_int(hour_min[0], 10)
-		if !ok {
-			fmt.printf("Failed to parse task hour! %s\n", task.time)
+			year, ok := strconv.parse_int(year_str, 10)
+			if !ok {
+				fmt.printf("Failed to parse task year! %s\n", year_str)
+				return
+			}
+			month, ok2 := strconv.parse_int(month_str, 10)
+			if !ok2 {
+				fmt.printf("Failed to parse task month! %s\n", month_str)
+				return
+			}
+			day, ok3 := strconv.parse_int(day_str, 10)
+			if !ok3 {
+				fmt.printf("Failed to parse task day! %s\n", day_str)
+				return
+			}
+		}
+
+		time_chunks := strings.fields(chunks[1])
+
+		min := 0
+		hour_min := strings.split(time_chunks[0], ":")
+
+		hour, ok4 := strconv.parse_int(hour_min[0], 10)
+		if !ok4 {
+			fmt.printf("Failed to parse task hour! %s\n", task.start_time)
 			return
 		}
 		if len(hour_min) == 2 {
 			min, ok = strconv.parse_int(hour_min[1], 10)
 			if !ok {
-				fmt.printf("Failed to parse task min! %s\n", task.time)
+				fmt.printf("Failed to parse task min! %s\n", task.start_time)
 				return
 			}
 		}
 
-		am_pm_str := chunks[len(chunks)-1]
+		am_pm_str := time_chunks[len(time_chunks)-1]
 		if am_pm_str == "PM" {
 			hour += 12
 		}
 
-		weekday := -1
-		switch task.day {
-		case "all":       weekday = -1
-		case "sunday":    weekday = 0
-		case "monday":    weekday = 1
-		case "tuesday":   weekday = 2
-		case "wednesday": weekday = 3
-		case "thursday":  weekday = 4
-		case "friday":    weekday = 5
-		case "saturday":  weekday = 6
-		case:
-			fmt.printf("Invalid task day! %s\n", task.day)
+		start_time, ok5 := time.components_to_time(year, month, day, hour, min, 0, 0)
+		if !ok5 {
+			fmt.printf("Invalid time! %v %v %v %v %v\n", year, month, day, hour, min)
 			return
 		}
 
-		switch task.kind {
-		case "daily":
-			append(task_list, Task{task.name, get_next_time(start_time, hour, min)})
+		if len(task.days) >= 7 {
+			fmt.printf("Too many days in rule\n")
+			return
+		}
 
-		case "weekly":
-			append(task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
-
-		case "monthly":
-			found_last := false
-			for mod in task.modifiers {
-				if mod == "last" {
-					found_last = true
-					break
-				}
-			}
-			if !found_last {
-				fmt.printf("normal monthly not yet handled!\n")
+		days := make([dynamic]TaskDay, 0, 7)
+		for day, idx in task.days {
+			weekday := TaskDay.None
+			switch day {
+			case "sun": weekday = .Sunday
+			case "mon": weekday = .Monday
+			case "tue": weekday = .Tuesday
+			case "wed": weekday = .Wednesday
+			case "thu": weekday = .Thursday
+			case "fri": weekday = .Friday
+			case "sat": weekday = .Saturday
+			case:
+				fmt.printf("Invalid task day! %s\n", day)
 				return
 			}
-
-			append(task_list, Task{task.name, get_next_last_day(start_time, weekday, hour, min)})
-
-		case "biweekly":
-			append(task_list, Task{task.name, get_next_day_and_time(start_time, weekday, hour, min)})
-		case:
-			fmt.printf("Invalid task kind! %s\n", task.kind)
-			return
+			append(&days, weekday)
 		}
+
+		freq := TaskFreq.Once
+		switch task.freq {
+		case "once":    freq = .Once
+		case "daily":   freq = .Daily
+		case "weekly":  freq = .Weekly
+		case "monthly": freq = .Monthly
+		case "yearly":  freq = .Yearly
+		case:
+			fmt.printf("Invalid task freq %s\n", task.freq)
+		}
+
+		tz_str := strings.clone_to_cstring(task.tz)
+		months := []TaskMonth{}
+		cur_task := Task{
+			name       = task.name,
+			start_time = start_time,
+			tz         = tz_str,
+			freq       = freq,
+			days       = days,
+			months     = months,
+
+			interval = task.interval,
+			count    = task.count,
+		}
+		append(task_list, cur_task)
 	}
 }
 
+generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
+	yesterday := get_start_of_day(time.time_add(now, -(24 * time.Hour)))
+	today := get_start_of_day(now)
+	tomorrow := get_start_of_day(time.time_add(now, (24 * time.Hour)))
+
+	event_list := make([dynamic]Event)
+	defer {
+		unsetenv("TZ")
+		tzset()
+	}
+
+	for &task, idx in task_list {
+		if task.tz == "float" {
+			unsetenv("TZ")
+			tzset()
+		} else {
+			setenv("TZ", task.tz, 1)
+			tzset()
+		}
+
+		#partial switch task.freq {
+		case .Once:
+			append(&event_list, Event{task.name, task.start_time})
+		case .Daily:
+			hour, min, _ := time.clock_from_time(task.start_time)
+			append(&event_list, Event{task.name, set_time(yesterday, hour, min)})
+			append(&event_list, Event{task.name, set_time(today,     hour, min)})
+			append(&event_list, Event{task.name, set_time(tomorrow,  hour, min)})
+		case .Weekly:
+			hour, min, _ := time.clock_from_time(task.start_time)
+			for day in task.days {
+				append(&event_list, Event{task.name, set_weekday_and_time(today, int(day), hour, min)})
+			}
+		case .Monthly:
+			hour, min, _ := time.clock_from_time(task.start_time)
+			for day in task.days {
+				append(&event_list, Event{task.name, set_weekday_and_time(today, int(day), hour, min)})
+			}
+		}
+	}
+
+	return event_list[:]
+}
 
 main :: proc() {
 	now := time.now()
@@ -496,24 +660,25 @@ main :: proc() {
 	stored_height := pt.height
 	stored_width  := pt.width
 
-	load_tasks(&pt, &task_list, "cal.json", now, start_time)
+	load_tasks(&task_list, "cal.json")
+	event_list := generate_events(task_list[:], now)
 
-	task_sort_proc :: proc(i, j: Task) -> bool {
+	event_sort_proc :: proc(i, j: Event) -> bool {
 		dur := time.diff(i.time, j.time)
 		return dur > 0
 	}
-	slice.sort_by(task_list[:], task_sort_proc)
+	slice.sort_by(event_list[:], event_sort_proc)
 
 	fmt.printf("%v | NOW\n", now)
 	fmt.printf("%v | WHEEL START\n", start_time)
-	for task, idx in task_list {
-		fmt.printf("%v | %s\n", task.time, task.name)
+	for event, idx in event_list {
+		local_time := to_local_time(event.time)
+		time_str := time_to_str(local_time)
+		fmt.printf("%v | %s\n", time_str, event.name)
 	}
 
 	max_visible := 4
 	list_max    := 5
-
-	
 
 	ev := PlatformEvent{}
 	main_loop: for {
@@ -548,30 +713,30 @@ main :: proc() {
 		side_min := min(pt.width / 2.5, pt.height / 2.5)
 		x_pos, y_pos := center_xy(pt.width, pt.height, side_min, side_min)
 
-		cur_task_idx := -1
-		#reverse for task, idx in task_list {
-			rem_sec := time.duration_seconds(time.diff(current_time, task.time))
+		cur_event_idx := -1
+		#reverse for event, idx in event_list {
+			rem_sec := time.duration_seconds(time.diff(current_time, event.time))
 			if rem_sec <= 0 {
 				continue
 			}
 
-			cur_task_idx = idx
+			cur_event_idx = idx
 		}
 
-		task_chars := 20
-		task_width := f64(task_chars) * pt.em
-		if cur_task_idx >= 0 {
-			start_idx := min(cur_task_idx + max_visible - 1, len(task_list) - 1)
-			for i := start_idx; i >= cur_task_idx; i -= 1 {
-				task := &task_list[i]
+		event_chars := 20
+		event_width := f64(event_chars) * pt.em
+		if cur_event_idx >= 0 {
+			start_idx := min(cur_event_idx + max_visible - 1, len(event_list) - 1)
+			for i := start_idx; i >= cur_event_idx; i -= 1 {
+				event := &event_list[i]
 
-				total_sec := time.duration_seconds(time.diff(start_time, task.time))
-				rem_sec := time.duration_seconds(time.diff(current_time, task.time))
+				total_sec := time.duration_seconds(time.diff(start_time, event.time))
+				rem_sec := time.duration_seconds(time.diff(current_time, event.time))
 				perc := rem_sec / total_sec
 
 				color_idx := i % (len(pt.colors.active) - 1)
 
-				ring_shrink := f64(cur_task_idx - i)
+				ring_shrink := f64(cur_event_idx - i)
 				radius := ((pt.em * ring_shrink) / 2) + side_min
 				draw_circle(&pt, Vec2{pt.width / 2, pt.height / 2}, radius, perc, pt.colors.active[color_idx])
 
@@ -586,14 +751,14 @@ main :: proc() {
 
 			container := Rect{x_pos, y_pos, side_min, side_min}
 
-			cur_task := &task_list[cur_task_idx]
+			cur_event := &event_list[cur_event_idx]
 			h_1 := get_text_height(&pt, .H1Size, .DefaultFontBold)
 			h_2 := get_text_height(&pt, .H1Size, .DefaultFont)
 			h_3 := get_text_height(&pt, .H1Size, .MonoFont)
 			h_gap := (pt.em / 2)
 			total_h := h_1 + h_gap + h_2 + h_gap + h_3
 
-			rem_time := time.duration_round(time.diff(current_time, cur_task.time), time.Second)
+			rem_time := time.duration_round(time.diff(current_time, cur_event.time), time.Second)
 			buf := [time.MIN_HMS_LEN]u8{}
 			rem_time_str := fmt.tprintf("%v", time.duration_to_string_hms(rem_time, buf[:]))
 
@@ -601,22 +766,22 @@ main :: proc() {
 
 			wheel_text := "Up Next:"
 			up_next_width := measure_text(&pt, wheel_text, .H1Size, .DefaultFontBold)
-			task_name_width := measure_text(&pt, cur_task.name, .H1Size, .DefaultFont)
+			event_name_width := measure_text(&pt, cur_event.name, .H1Size, .DefaultFont)
 			rem_time_width := measure_text(&pt, rem_time_str, .H1Size, .MonoFont)
-			max_width := max(up_next_width, task_name_width, rem_time_width)
+			max_width := max(up_next_width, event_name_width, rem_time_width)
 
-			name := fmt.ctprintf("Alarm | Up Next: %s\n", cur_task.name)
+			name := fmt.ctprintf("Alarm | Up Next: %s\n", cur_event.name)
 
 			inner_diam := inner_radius * 2
 			if max_width < inner_diam {
 				x := center_x(inner_diam, max_width)
 				draw_text(&pt, wheel_text, Vec2{(inner_center.x - inner_radius) + x, container.y + y}, .H1Size, .DefaultFontBold, pt.colors.text)
-				draw_text(&pt, cur_task.name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
+				draw_text(&pt, cur_event.name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
 
 				rem_str_x := center_x(inner_diam, rem_time_width)
 				draw_text(&pt, rem_time_str, Vec2{(inner_center.x - inner_radius) + rem_str_x, container.y + y + h_1 + h_gap + h_2 + h_gap}, .H1Size, .MonoFont, pt.colors.text)
 			} else {
-				name = fmt.ctprintf("%s\n", cur_task.name)
+				name = fmt.ctprintf("%s\n", cur_event.name)
 			}
 
 			set_window_title(&pt, name)
@@ -633,57 +798,57 @@ main :: proc() {
 
 			list_y := pt.em
 			header_height := get_text_height(&pt, .H1Size, .DefaultFontBold)
-			draw_text(&pt, "Upcoming Tasks", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			draw_text(&pt, "Upcoming Events", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
 			list_y += (pt.em * 0.1)
 
-			idx := cur_task_idx
+			idx := cur_event_idx
 			for i := 0; i < list_max; i += 1 {
-				task_height := get_text_height(&pt, .H1Size, .DefaultFont)
-				padded_height := task_height + pt.em
+				event_height := get_text_height(&pt, .H1Size, .DefaultFont)
+				padded_height := event_height + pt.em
 				y_start := next_y(&pt, &list_y, padded_height)
 				text_y := y_start + center_x(list_y - y_start, padded_height)
 
-				if idx >= len(task_list) || idx < 0 {
+				if idx >= len(event_list) || idx < 0 {
 					continue
 				}
 
-				task := &task_list[idx]
+				event := &event_list[idx]
 
 				text_color := pt.colors.dark_text
-				if idx < (cur_task_idx + max_visible) {
+				if idx < (cur_event_idx + max_visible) {
 					color_idx := idx % (len(pt.colors.active) - 1)
-					draw_rect(&pt, Rect{pt.em, y_start, task_width + (pt.em * .5), padded_height}, pt.colors.active[color_idx])
+					draw_rect(&pt, Rect{pt.em, y_start, event_width + (pt.em * .5), padded_height}, pt.colors.active[color_idx])
 				} else {
 					text_color = pt.colors.text
 				}
 
-				short_name := trunc_name(&pt, task.name, task_chars, .H1Size, .DefaultFont)
+				short_name := trunc_name(&pt, event.name, event_chars, .H1Size, .DefaultFont)
 				draw_text(&pt, short_name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, text_color)
 				idx += 1
 			}
 
 			list_y += pt.em
 			header_height = get_text_height(&pt, .H1Size, .DefaultFontBold)
-			draw_text(&pt, "Prior Tasks", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			draw_text(&pt, "Prior Events", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
 			list_y += (pt.em * 0.1)
 
-			idx = cur_task_idx - 1
-			if cur_task_idx < 0 {
-				idx = len(task_list) - 1
+			idx = cur_event_idx - 1
+			if cur_event_idx < 0 {
+				idx = len(event_list) - 1
 			}
 
 			for i := list_max; i >= 0; i -= 1 {
-				task_height := get_text_height(&pt, .H1Size, .DefaultFont)
-				padded_height := task_height + pt.em
+				event_height := get_text_height(&pt, .H1Size, .DefaultFont)
+				padded_height := event_height + pt.em
 				y_start := next_y(&pt, &list_y, padded_height)
 				text_y := y_start + center_x(list_y - y_start, padded_height)
 
-				if idx >= len(task_list) || idx < 0 {
+				if idx >= len(event_list) || idx < 0 {
 					continue
 				}
 
-				task := &task_list[idx]
-				draw_text(&pt, task.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
+				event := &event_list[idx]
+				draw_text(&pt, event.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
 				idx -= 1
 			}
 		}
