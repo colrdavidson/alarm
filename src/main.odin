@@ -57,6 +57,8 @@ TaskFreq :: enum {
 
 Task :: struct {
 	name:           string,
+	calendar:       string,
+	redact:           bool,
 
 	start_time:  time.Time,
 	tz:            cstring,
@@ -333,6 +335,7 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
 			}
 		}
 	}
+	calendar_name := strings.clone(cal_name)
 
 	// Collect all unique ids with highest seq
 	// (Keep only the latest versions of events)
@@ -364,6 +367,9 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
 
 		task := Task{
 			name = ev.summary,
+			calendar = calendar_name,
+			redact = redact,
+
 			start_time = start_time,
 			tz = strings.clone_to_cstring(tz_str),
 		}
@@ -615,23 +621,28 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 			tzset()
 		}
 
+		task_name := task.name
+		if task.redact {
+			task_name = fmt.aprintf("Event from %s", task.calendar)
+		}
+
 		#partial switch task.freq {
 		case .Once:
-			append(&event_list, Event{task.name, task.start_time})
+			append(&event_list, Event{task_name, task.start_time})
 		case .Daily:
 			hour, min, _ := time.clock_from_time(task.start_time)
-			append(&event_list, Event{task.name, set_time(yesterday, hour, min)})
-			append(&event_list, Event{task.name, set_time(today,     hour, min)})
-			append(&event_list, Event{task.name, set_time(tomorrow,  hour, min)})
+			append(&event_list, Event{task_name, set_time(yesterday, hour, min)})
+			append(&event_list, Event{task_name, set_time(today,     hour, min)})
+			append(&event_list, Event{task_name, set_time(tomorrow,  hour, min)})
 		case .Weekly:
 			hour, min, _ := time.clock_from_time(task.start_time)
 			for day in task.days {
-				append(&event_list, Event{task.name, set_weekday_and_time(today, int(day), hour, min)})
+				append(&event_list, Event{task_name, set_weekday_and_time(today, int(day), hour, min)})
 			}
 		case .Monthly:
 			hour, min, _ := time.clock_from_time(task.start_time)
 			for day in task.days {
-				append(&event_list, Event{task.name, set_weekday_and_time(today, int(day), hour, min)})
+				append(&event_list, Event{task_name, set_weekday_and_time(today, int(day), hour, min)})
 			}
 		}
 	}
@@ -776,7 +787,9 @@ main :: proc() {
 			if max_width < inner_diam {
 				x := center_x(inner_diam, max_width)
 				draw_text(&pt, wheel_text, Vec2{(inner_center.x - inner_radius) + x, container.y + y}, .H1Size, .DefaultFontBold, pt.colors.text)
-				draw_text(&pt, cur_event.name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
+
+				short_name := trunc_name(&pt, cur_event.name, event_chars, .H1Size, .DefaultFont)
+				draw_text(&pt, short_name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
 
 				rem_str_x := center_x(inner_diam, rem_time_width)
 				draw_text(&pt, rem_time_str, Vec2{(inner_center.x - inner_radius) + rem_str_x, container.y + y + h_1 + h_gap + h_2 + h_gap}, .H1Size, .MonoFont, pt.colors.text)
@@ -848,7 +861,8 @@ main :: proc() {
 				}
 
 				event := &event_list[idx]
-				draw_text(&pt, event.name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
+				short_name := trunc_name(&pt, event.name, event_chars, .H1Size, .DefaultFont)
+				draw_text(&pt, short_name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
 				idx -= 1
 			}
 		}
