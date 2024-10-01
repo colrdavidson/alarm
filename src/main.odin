@@ -863,6 +863,20 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 }
 
 main :: proc() {
+/*
+	tz_ctx, ok := tzdb_init("/usr/share/zoneinfo", "/etc/localtime")
+	if !ok {
+		return
+	}
+	dt, _ := datetime.components_to_datetime(2024, 10, 1, 11, 46, 0)
+	r_dt := _DateTime{dt.date, dt.time, "local"}
+	l_dt := datetime_to_local(&tz_ctx, r_dt)
+	u_dt := datetime_to_utc(&tz_ctx, l_dt)
+	fmt.printf("%v\n", datetime_to_str(&tz_ctx, l_dt))
+	fmt.printf("%v\n", datetime_to_str(&tz_ctx, u_dt))
+
+	if true { return }
+*/
 	now := time.now()
 	start_time := get_start_of_day(now)
 

@@ -1,9 +1,9 @@
 package main
 
 import "base:intrinsics"
-import "core:fmt"
 import "core:time"
 import "core:strings"
+import "core:os"
 
 // Implementing RFC8536 [https://datatracker.ietf.org/doc/html/rfc8536]
 
@@ -44,7 +44,7 @@ Leapsecond_Record :: struct #packed {
 	corr:  i32be,
 }
 
-Timechange_Record :: struct {
+TZ_Record :: struct {
 	time:         time.Time,
 	utc_offset:   i64,
 
@@ -54,7 +54,7 @@ Timechange_Record :: struct {
 
 TZ_Region :: struct {
 	name:                 string,
-	records: []Timechange_Record,
+	records: []TZ_Record,
 	shortnames:         []string,
 }
 
@@ -92,6 +92,28 @@ region_destroy :: proc(region: TZ_Region) {
 	}
 	delete(region.records)
 	delete(region.name)
+}
+
+region_get_nearest :: proc(region: TZ_Region, tm: time.Time) -> TZ_Record {
+	n := len(region.records)
+	left, right := 0, n
+
+	for left < right {
+		mid := int(uint(left+right) >> 1)
+		if region.records[mid].time._nsec < tm._nsec {
+			left = mid + 1
+		} else {
+			right = mid
+		}
+	}
+
+	idx := max(0, left-1)
+	return region.records[idx]
+}
+
+load_tzif_file :: proc(filename: string, region_name: string, allocator := context.allocator) -> (out: TZ_Region, ok: bool) {
+	tzif_data := os.read_entire_file_from_filename(filename, allocator) or_return
+	return parse_tzif(tzif_data, region_name, allocator)
 }
 
 parse_tzif :: proc(_buffer: []u8, region_name: string, allocator := context.allocator) -> (out: TZ_Region, ok: bool) {
@@ -180,7 +202,6 @@ parse_tzif :: proc(_buffer: []u8, region_name: string, allocator := context.allo
 		}
 
 		if int(ltt.idx) > int(real_hdr.charcnt - 1) {
-			fmt.printf("%v\n", ltt.idx)
 			return
 		}
 	}
@@ -240,8 +261,7 @@ parse_tzif :: proc(_buffer: []u8, region_name: string, allocator := context.allo
 		end_idx += 1
 	}
 
-	footer_str := string(buffer[:end_idx])
-	fmt.printf("%v\n", footer_str)
+	//footer_str := string(buffer[:end_idx])
 
 	ltt_names := make([dynamic]string)
 	for ltt in local_time_types {
@@ -249,7 +269,7 @@ parse_tzif :: proc(_buffer: []u8, region_name: string, allocator := context.allo
 		append(&ltt_names, strings.clone_from_cstring_bounded(name, len(timezone_string_table)))
 	}
 
-	records := make([dynamic]Timechange_Record)
+	records := make([dynamic]TZ_Record)
 	for trans_time, idx in transition_times {
 		trans_idx := transition_types[idx]
 		ltt := local_time_types[trans_idx]
@@ -257,13 +277,12 @@ parse_tzif :: proc(_buffer: []u8, region_name: string, allocator := context.allo
 		ut_tag := ut_tags[trans_idx]
 
 		tm := time.unix(i64(trans_time), 0)
-		append(&records, Timechange_Record{
+		append(&records, TZ_Record{
 			time       = time.unix(i64(trans_time), 0),
 			utc_offset = i64(ltt.utoff),
 			shortname  = ltt_names[trans_idx],
 			dst        = bool(ltt.dst),
 		})
-		//fmt.printf("%v | %v %v %v\n", tm, designation, ltt.utoff, ltt.dst)
 	}
 
 	return TZ_Region{
