@@ -868,7 +868,7 @@ main :: proc() {
 	if !ok {
 		return
 	}
-	dt, _ := datetime.components_to_datetime(2024, 10, 1, 11, 46, 0)
+	dt, _ := datetime.components_to_datetime(2024, 10, 1, 6, 16, 0)
 	r_dt := _DateTime{dt.date, dt.time, "local"}
 	l_dt := datetime_to_local(&tz_ctx, r_dt)
 	u_dt := datetime_to_utc(&tz_ctx, l_dt)

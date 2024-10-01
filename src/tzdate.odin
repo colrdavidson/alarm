@@ -12,6 +12,8 @@ import "core:strings"
 TZ_Context :: struct {
 	db_path:               string,
 	local_name:            string,
+
+	local_region:      ^TZ_Region,
 	regions: map[string]TZ_Region,
 
 	allocator: runtime.Allocator,
@@ -58,13 +60,18 @@ tzdb_destroy :: proc(tzdb: ^TZ_Context) {
 
 tzdb_get_region :: proc(tzdb: ^TZ_Context, _reg_str: string) -> (out_reg: TZ_Region, success: bool) {
 	reg_str := _reg_str
+	is_local := reg_str == "local"
+
+	if is_local {
+		if tzdb.local_region != nil {
+			return tzdb.local_region^, true
+		} else {
+			reg_str = tzdb.local_name
+		}
+	}
 
 	region, ok := tzdb.regions[reg_str]
 	if !ok {
-		if reg_str == "local" {
-			reg_str = tzdb.local_name
-		}
-
 		region_path := filepath.join([]string{tzdb.db_path, reg_str}, tzdb.allocator)
 		defer delete(region_path)
 
@@ -73,7 +80,11 @@ tzdb_get_region :: proc(tzdb: ^TZ_Context, _reg_str: string) -> (out_reg: TZ_Reg
 			return
 		}
 
-		tzdb.regions["local"] = tzif_region
+		tzdb.regions[reg_str] = tzif_region
+		if is_local {
+			tzdb.local_region = &tzdb.regions[reg_str]
+		}
+
 		region = tzif_region
 	}
 
@@ -97,17 +108,29 @@ datetime_to_utc :: proc(tz_ctx: ^TZ_Context, _dt: _DateTime) -> (out: _DateTime,
 	return _DateTime{adj_dt.date, adj_dt.time, "UTC"}, true
 }
 
-datetime_to_local :: proc(tz_ctx: ^TZ_Context, _dt: _DateTime) -> (out: _DateTime, success: bool) #optional_ok {
-	region := tzdb_get_region(tz_ctx, "local") or_return
+datetime_to_tz :: proc(tz_ctx: ^TZ_Context, _dt: _DateTime, tz: string) -> (out: _DateTime, success: bool) #optional_ok {
+	next_region := tzdb_get_region(tz_ctx, tz) or_return
 
-	dt := datetime.DateTime{_dt.date, _dt.time}
-	tm, _ := time.datetime_to_time(dt)
-	record := region_get_nearest(region, tm)
+	dt := _dt
+	if dt.tz == next_region.name {
+		return dt, true
+	}
+	if dt.tz != "UTC" {
+		dt = datetime_to_utc(tz_ctx, dt)
+	}
+
+	r_dt := datetime.DateTime{dt.date, dt.time}
+	tm, _ := time.datetime_to_time(r_dt)
+	record := region_get_nearest(next_region, tm)
 
 	secs := time.time_to_unix(tm)
 	adj_time := time.unix(secs + record.utc_offset, 0)
 	adj_dt, _ := time.time_to_datetime(adj_time)
-	return _DateTime{adj_dt.date, adj_dt.time, region.name}, true
+	return _DateTime{adj_dt.date, adj_dt.time, next_region.name}, true
+}
+
+datetime_to_local :: proc(tz_ctx: ^TZ_Context, _dt: _DateTime) -> (out: _DateTime, success: bool) #optional_ok {
+	return datetime_to_tz(tz_ctx, _dt, "local")
 }
 
 datetime_to_str :: proc(tz_ctx: ^TZ_Context, _dt: _DateTime) -> string {
