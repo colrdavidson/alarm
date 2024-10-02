@@ -393,21 +393,24 @@ parse_ical_rrule :: proc(task: ^Task, rrule: string) -> (ok: bool) {
 			task.until_time = ts
 
 		case "BYDAY":
-			new_day := TaskDayPos{}
-			switch val {
-			case "SU": new_day.day = .Sunday
-			case "MO": new_day.day = .Monday
-			case "TU": new_day.day = .Tuesday
-			case "WE": new_day.day = .Wednesday
-			case "TH": new_day.day = .Thursday
-			case "FR": new_day.day = .Friday
-			case "SA": new_day.day = .Saturday
-			case:
-				fmt.printf("Unhandled byday: %v\n", val)
-				return
-			}
+			daypos_chunks := strings.split(val, ",")
+			for daypos in daypos_chunks {
+				new_day := TaskDayPos{}
+				switch daypos {
+				case "SU": new_day.day = .Sunday
+				case "MO": new_day.day = .Monday
+				case "TU": new_day.day = .Tuesday
+				case "WE": new_day.day = .Wednesday
+				case "TH": new_day.day = .Thursday
+				case "FR": new_day.day = .Friday
+				case "SA": new_day.day = .Saturday
+				case:
+					fmt.printf("Unhandled byday: %v\n", val)
+					return
+				}
 
-			append(&task.day_pos, new_day)
+				append(&task.day_pos, new_day)
+			}
 
 		case "INTERVAL":
 			interval := strconv.parse_int(val, 10) or_return
@@ -511,7 +514,9 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
 
 	latest_events := make([dynamic]CalEvent)
 	for _, cal_arr in uid_map {
-		append(&latest_events, cal_arr[len(cal_arr)-1])
+		last_ev := cal_arr[len(cal_arr)-1]
+
+		append(&latest_events, last_ev)
 	}
 
 	// Chug through and parse out timestamps and rules
@@ -533,7 +538,7 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
 		}
 
 		task := Task{
-			name = ev.summary,
+			name = strings.clone(ev.summary),
 			calendar = calendar_name,
 			redact = redact,
 
@@ -566,6 +571,17 @@ trunc_name :: proc(pt: ^Platform_State, name: string, max_chars: int, scale: Fon
 	}
 }
 
+Url :: struct {
+	path: string,
+	redact: bool,
+}
+RequestState :: struct {
+	handle: rawptr,
+	b_header: strings.Builder,
+	b_body: strings.Builder,
+	url: Url,
+}
+
 load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 	config, ok := os.read_entire_file_from_filename(config_path)
 	if !ok {
@@ -593,10 +609,6 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 	}
 
 	File :: struct {
-		path: string,
-		redact: bool,
-	}
-	Url :: struct {
 		path: string,
 		redact: bool,
 	}
@@ -642,26 +654,65 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 		parse_ical_data(string(out), task_list, file.redact)
 	}
 
-/*
-	crl := curl.easy_init()
-	header_b := strings.builder_make()
-	body_b := strings.builder_make()
-	for url in cal_config.urls {
-		curl.easy_setopt(crl, curl.OPT_URL, url.path)
-		curl.easy_setopt(crl, curl.OPT_NOPROGRESS, 1)
-		curl.easy_setopt(crl, curl.OPT_WRITEFUNCTION, curl_write_func)
-		curl.easy_setopt(crl, curl.OPT_WRITEDATA, &body_b)
-		curl.easy_setopt(crl, curl.OPT_HEADERDATA, &header_b)
+	multi_handle := curl.multi_init()
 
-		curl.easy_perform(crl)
-		cal_data := strings.to_string(body_b)
-		parse_ical_data(cal_data, task_list, url.redact)
+	req_arr := make([]RequestState, len(cal_config.urls))
+	for _, idx in req_arr {
+		req := RequestState{
+			handle   = curl.easy_init(),
+			b_header = strings.builder_make(),
+			b_body   = strings.builder_make(),
+			url      = cal_config.urls[idx],
+		}
+		req_arr[idx] = req
+		req_ptr := &req_arr[idx]
 
-		strings.builder_reset(&header_b)
-		strings.builder_reset(&body_b)
+		curl.easy_setopt(req.handle, curl.OPT_URL, req_ptr.url.path)
+		curl.easy_setopt(req.handle, curl.OPT_NOPROGRESS, 1)
+		curl.easy_setopt(req.handle, curl.OPT_WRITEFUNCTION, curl_write_func)
+		curl.easy_setopt(req.handle, curl.OPT_WRITEDATA, &req_ptr.b_body)
+		curl.easy_setopt(req.handle, curl.OPT_HEADERDATA, &req_ptr.b_header)
+
+		curl.multi_add_handle(multi_handle, req_ptr.handle)
 	}
-	curl.easy_cleanup(crl)
-*/
+
+	curl_running := i32(len(req_arr))
+	for curl_running != 0 {
+		mc := curl.multi_perform(multi_handle, &curl_running)
+
+		if curl_running != 0 {
+			mc = curl.multi_poll(multi_handle, nil, 0, 1000, nil)
+		}
+
+		if mc != 0 {
+			break
+		}
+	}
+
+	msgs_left := i32(0)
+	for {
+		msg := curl.multi_info_read(multi_handle, &msgs_left)
+		if msg == nil {
+			break
+		}
+
+		if msg.msg == curl.MSG_DONE {
+			for &req in req_arr {
+				if msg.easy_handle == req.handle {
+					cal_data := strings.to_string(req.b_body)
+					parse_ical_data(cal_data, task_list, req.url.redact)
+					strings.builder_reset(&req.b_header)
+					strings.builder_reset(&req.b_body)
+				}
+			}
+		}
+	}
+
+	for &req, idx in req_arr {
+		curl.multi_remove_handle(multi_handle, req.handle)
+		curl.easy_cleanup(req.handle)
+	}
+	curl.multi_cleanup(multi_handle)
 
 	for task in cal_config.tasks {
 		chunks := strings.split(task.start_time, "@")

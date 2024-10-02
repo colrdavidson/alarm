@@ -1324,11 +1324,11 @@ foreign libcurl {
     multi_wait                                  :: proc(multi_handle : rawptr, extra_fds : ^waitfd, extra_nfds : _c.uint, timeout_ms : int, ret : ^int) -> CURLMcode ---
     multi_poll                                  :: proc(multi_handle : rawptr, extra_fds : ^waitfd, extra_nfds : _c.uint, timeout_ms : int, ret : ^int) -> CURLMcode ---
     multi_wakeup                                :: proc(multi_handle : rawptr) -> CURLMcode ---
-    multi_perform                               :: proc(multi_handle : rawptr, running_handles : ^int) -> CURLMcode ---
+    multi_perform                               :: proc(multi_handle : rawptr, running_handles : ^i32) -> CURLMcode ---
     multi_cleanup                               :: proc(multi_handle : rawptr) -> CURLMcode ---
-    multi_socket                                :: proc(multi_handle : rawptr, s : socket_t, running_handles : ^int) -> CURLMcode ---
-    multi_socket_action                         :: proc(multi_handle : rawptr, s : socket_t, ev_bitmask : int, running_handles : ^int) -> CURLMcode ---
-    multi_info_read                             :: proc(multi_handle : rawptr, msgs_in_queue : ^int) -> ^CURLMsg ---
+    multi_socket                                :: proc(multi_handle : rawptr, s : socket_t, running_handles : ^i32) -> CURLMcode ---
+    multi_socket_action                         :: proc(multi_handle : rawptr, s : socket_t, ev_bitmask : int, running_handles : ^i32) -> CURLMcode ---
+    multi_info_read                             :: proc(multi_handle : rawptr, msgs_in_queue : ^i32) -> ^CURLMsg ---
     multi_strerror                              :: proc(CURLMcode) -> cstring ---
     formget                                     :: proc(form : ^httppost, arg : rawptr, append : formget_callback) -> int ---
     formfree                                    :: proc(form : ^httppost) ---
