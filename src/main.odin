@@ -14,7 +14,6 @@ import "core:strings"
 import "core:strconv"
 import "core:time"
 import "core:time/datetime"
-//import "core:time/timezone"
 import "core:path/filepath"
 import "core:encoding/json"
 
@@ -864,22 +863,6 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 }
 
 main :: proc() {
-/*
-	local_tz, ok := timezone.load_region("local")
-	if !ok {
-		return
-	}
-
-	dt, _ := datetime.components_to_datetime(2024, 10, 1, 6, 16, 0)
-	dt.tz = local_tz
-
-	l_dt := timezone.datetime_to_tz(dt, dt.tz)
-	u_dt := timezone.datetime_to_utc(l_dt)
-	fmt.printf("%v\n", timezone.datetime_to_str(l_dt))
-	fmt.printf("%v\n", timezone.datetime_to_str(u_dt))
-
-	if true { return }
-*/
 	now := time.now()
 	start_time := get_start_of_day(now)
 
