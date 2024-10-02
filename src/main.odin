@@ -136,6 +136,13 @@ to_local_time :: proc(t: time.Time) -> time.Time {
 	ctm := libc.localtime(&cur_ctime)^
 	return ctm_to_time(ctm)
 }
+to_utc_time :: proc(t: time.Time) -> time.Time {
+	ctime := time_to_ctime(t)
+	ctm := libc.gmtime(&ctime)^
+	ctm.tm_isdst = -1
+	return ctime_to_time(libc.mktime(&ctm))
+}
+
 time_to_str :: proc(t: time.Time) -> string {
 	year, month, day := time.date(t)
 	hour, minute, second := time.clock_from_time(t)
@@ -865,7 +872,11 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 
 		#partial switch task.freq {
 		case .Once:
-			append(&event_list, Event{task_name, task.start_time})
+			set_tz(task.start_tz)
+			task_time := to_utc_time(task.start_time)
+			reset_tz()
+
+			append(&event_list, Event{task_name, task_time})
 		case .Daily:
 			append(&event_list, Event{task_name, set_time(yesterday, task)})
 			append(&event_list, Event{task_name, set_time(today,     task)})
@@ -943,15 +954,13 @@ main :: proc() {
 	}
 	slice.sort_by(event_list[:], event_sort_proc)
 
-/*
 	fmt.printf("%v | NOW\n", now)
 	fmt.printf("%v | WHEEL START\n", start_time)
 	for event, idx in event_list {
 		fmt.printf("%v | %s\n", time_to_str(to_local_time(event.time)), event.name)
 	}
-*/
 
-	max_visible := 4
+	max_visible := 5
 	list_max    := 5
 
 	ev := PlatformEvent{}
