@@ -6,6 +6,7 @@ import "core:c"
 import "core:c/libc"
 import "core:sys/posix"
 
+import "core:math"
 import "core:os"
 import "core:fmt"
 import "core:net"
@@ -154,6 +155,17 @@ time_to_str :: proc(t: time.Time) -> string {
 	}
 
 	return fmt.tprintf("%02d-%02d-%04d @ %02d:%02d %s local", month, day, year, hour, minute, am_pm_str)
+}
+short_time_to_str :: proc(t: time.Time) -> string {
+	hour, minute, second := time.clock_from_time(t)
+
+	am_pm_str := "AM"
+	if hour > 12 {
+		am_pm_str = "PM"
+		hour -= 12
+	}
+
+	return fmt.tprintf("% 2d:%02d %s", hour, minute, am_pm_str)
 }
 
 //  1 == d1 < d2
@@ -309,6 +321,18 @@ get_start_of_day :: proc(start_time: time.Time) -> time.Time {
 	ctm = libc.localtime(&l_ctime)^
 	return ctime_to_time(libc.mktime(&ctm))
 }
+get_end_of_day :: proc(start_time: time.Time) -> time.Time {
+	cur_ctime := time_to_ctime(start_time)
+	ctm := libc.localtime(&cur_ctime)^
+
+	ctm.tm_hour = 23
+	ctm.tm_min  = 59
+	ctm.tm_sec  = 59
+
+	l_ctime := libc.mktime(&ctm)
+	ctm = libc.localtime(&l_ctime)^
+	return ctime_to_time(libc.mktime(&ctm))
+}
 
 curl_write_func :: proc "c" (ptr: rawptr, size: c.size_t, num: c.size_t, b: ^strings.Builder) -> c.size_t {
 	context = runtime.default_context()
@@ -403,7 +427,25 @@ parse_ical_rrule :: proc(task: ^Task, rrule: string) -> (ok: bool) {
 			daypos_chunks := strings.split(val, ",")
 			for daypos in daypos_chunks {
 				new_day := TaskDayPos{}
-				switch daypos {
+
+				if len(daypos) < 2 {
+					fmt.printf("Invalid byday: %v\n", val)
+					return
+				} 
+
+				day_str := daypos[len(daypos)-2:]
+				if len(daypos) > 2 {
+					pos_str := daypos[:len(daypos)-2]
+					pos, ok := strconv.parse_int(pos_str, 10)
+					if !ok {
+						fmt.printf("Invalid byday: %v\n", val)
+						return
+					}
+
+					new_day.pos = pos
+				}
+
+				switch day_str {
 				case "SU": new_day.day = .Sunday
 				case "MO": new_day.day = .Monday
 				case "TU": new_day.day = .Tuesday
@@ -444,7 +486,7 @@ CalEvent :: struct {
 	uid:           string,
 }
 
-parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
+parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool, rename: string) {
 	data := _data
 
 	cal_name := ""
@@ -526,6 +568,11 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool) {
 		append(&latest_events, last_ev)
 	}
 
+	if redact && rename != "" {
+		delete(calendar_name)
+		calendar_name = strings.clone(rename)
+	}
+
 	// Chug through and parse out timestamps and rules
 	for cur_ev in latest_events {
 		ev := cur_ev
@@ -580,6 +627,7 @@ trunc_name :: proc(pt: ^Platform_State, name: string, max_chars: int, scale: Fon
 
 Url :: struct {
 	path: string,
+	rename: string,
 	redact: bool,
 }
 RequestState :: struct {
@@ -617,6 +665,7 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 
 	File :: struct {
 		path: string,
+		rename: string,
 		redact: bool,
 	}
 	ExprByDay :: struct {
@@ -658,7 +707,7 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			return
 		}
 
-		parse_ical_data(string(out), task_list, file.redact)
+		parse_ical_data(string(out), task_list, file.redact, file.rename)
 	}
 
 	multi_handle := curl.multi_init()
@@ -707,7 +756,7 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			for &req in req_arr {
 				if msg.easy_handle == req.handle {
 					cal_data := strings.to_string(req.b_body)
-					parse_ical_data(cal_data, task_list, req.url.redact)
+					parse_ical_data(cal_data, task_list, req.url.redact, req.url.rename)
 					strings.builder_reset(&req.b_header)
 					strings.builder_reset(&req.b_body)
 				}
@@ -867,7 +916,7 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 
 		task_name := task.name
 		if task.redact {
-			task_name = fmt.aprintf("Event from %s", task.calendar)
+			task_name = fmt.aprintf("%s Event", task.calendar)
 		}
 
 		#partial switch task.freq {
@@ -927,6 +976,7 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 main :: proc() {
 	now := time.now()
 	start_time := get_start_of_day(now)
+	end_time   := get_end_of_day(now)
 
 	task_list := make([dynamic]Task)
 
@@ -954,14 +1004,17 @@ main :: proc() {
 	}
 	slice.sort_by(event_list[:], event_sort_proc)
 
+/*
 	fmt.printf("%v | NOW\n", now)
 	fmt.printf("%v | WHEEL START\n", start_time)
+	fmt.printf("%v | TODAY END\n", end_time)
 	for event, idx in event_list {
 		fmt.printf("%v | %s\n", time_to_str(to_local_time(event.time)), event.name)
 	}
+*/
 
-	max_visible := 5
-	list_max    := 5
+	max_visible := 6
+	list_max    := 6
 
 	ev := PlatformEvent{}
 	main_loop: for {
@@ -997,9 +1050,15 @@ main :: proc() {
 		x_pos, y_pos := center_xy(pt.width, pt.height, side_min, side_min)
 
 		cur_event_idx := -1
+		day_start_idx := -1
 		#reverse for event, idx in event_list {
-			rem_sec := time.duration_seconds(time.diff(current_time, event.time))
-			if rem_sec <= 0 {
+			today_rem_sec := time.duration_seconds(time.diff(start_time, event.time))
+			if today_rem_sec >= 0 {
+				day_start_idx = idx
+			}
+
+			cur_rem_sec := time.duration_seconds(time.diff(current_time, event.time))
+			if cur_rem_sec <= 0 {
 				continue
 			}
 
@@ -1017,7 +1076,7 @@ main :: proc() {
 				rem_sec := time.duration_seconds(time.diff(current_time, event.time))
 				perc := rem_sec / total_sec
 
-				color_idx := i % (len(pt.colors.active) - 1)
+				color_idx := i %% (len(pt.colors.active) - 1)
 
 				ring_shrink := f64(cur_event_idx - i)
 				radius := ((pt.em * ring_shrink) / 2) + side_min
@@ -1042,8 +1101,8 @@ main :: proc() {
 			total_h := h_1 + h_gap + h_2 + h_gap + h_3
 
 			rem_time := time.duration_round(time.diff(current_time, cur_event.time), time.Second)
-			buf := [time.MIN_HMS_LEN]u8{}
-			rem_time_str := fmt.tprintf("%v", time.duration_to_string_hms(rem_time, buf[:]))
+			r_h, r_m, r_s := time.clock_from_time(time.Time{_nsec=i64(rem_time)})
+			rem_time_str := fmt.tprintf("%02d:%02d:%02d", r_h, r_m, r_s)
 
 			y := center_x(container.h, total_h)
 
@@ -1053,7 +1112,7 @@ main :: proc() {
 			rem_time_width := measure_text(&pt, rem_time_str, .H1Size, .MonoFont)
 			max_width := max(up_next_width, event_name_width, rem_time_width)
 
-			name := fmt.ctprintf("Alarm | Up Next: %s\n", cur_event.name)
+			name := fmt.ctprintf("Chili | Up Next: %s\n", cur_event.name)
 
 			inner_diam := inner_radius * 2
 			if max_width < inner_diam {
@@ -1071,26 +1130,27 @@ main :: proc() {
 
 			set_window_title(&pt, name)
 		} else {
-			set_window_title(&pt, "Alarm")
+			set_window_title(&pt, "Chili")
 		}
 
 		if pt.width >= 1000 {
-			next_y :: proc(pt: ^Platform_State, y: ^f64, height: f64) -> f64 {
+			line_gap := (pt.em * .4)
+			next_y :: proc(pt: ^Platform_State, y: ^f64, height: f64, line_gap: f64) -> f64 {
 				cur_y := y^
-				y^ = cur_y + height + (pt.em * .4)
+				y^ = cur_y + height + line_gap
 				return cur_y
 			}
 
 			list_y := pt.em
 			header_height := get_text_height(&pt, .H1Size, .DefaultFontBold)
-			draw_text(&pt, "Upcoming Events", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			draw_text(&pt, "Upcoming Events", Vec2{pt.em, next_y(&pt, &list_y, header_height, line_gap)}, .H1Size, .DefaultFontBold, pt.colors.text)
 			list_y += (pt.em * 0.1)
 
 			idx := cur_event_idx
 			for i := 0; i < list_max; i += 1 {
 				event_height := get_text_height(&pt, .H1Size, .DefaultFont)
 				padded_height := event_height + pt.em
-				y_start := next_y(&pt, &list_y, padded_height)
+				y_start := next_y(&pt, &list_y, padded_height, line_gap)
 				text_y := y_start + center_x(list_y - y_start, padded_height)
 
 				if idx >= len(event_list) || idx < 0 {
@@ -1101,7 +1161,7 @@ main :: proc() {
 
 				text_color := pt.colors.dark_text
 				if idx < (cur_event_idx + max_visible) {
-					color_idx := idx % (len(pt.colors.active) - 1)
+					color_idx := idx %% (len(pt.colors.active) - 1)
 					draw_rect(&pt, Rect{pt.em, y_start, event_width + (pt.em * .5), padded_height}, pt.colors.active[color_idx])
 				} else {
 					text_color = pt.colors.text
@@ -1114,7 +1174,7 @@ main :: proc() {
 
 			list_y += pt.em
 			header_height = get_text_height(&pt, .H1Size, .DefaultFontBold)
-			draw_text(&pt, "Prior Events", Vec2{pt.em, next_y(&pt, &list_y, header_height)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			draw_text(&pt, "Prior Events", Vec2{pt.em, next_y(&pt, &list_y, header_height, line_gap)}, .H1Size, .DefaultFontBold, pt.colors.text)
 			list_y += (pt.em * 0.1)
 
 			idx = cur_event_idx - 1
@@ -1122,10 +1182,10 @@ main :: proc() {
 				idx = len(event_list) - 1
 			}
 
-			for i := list_max; i >= 0; i -= 1 {
+			for i := 0; i < list_max; i += 1 {
 				event_height := get_text_height(&pt, .H1Size, .DefaultFont)
 				padded_height := event_height + pt.em
-				y_start := next_y(&pt, &list_y, padded_height)
+				y_start := next_y(&pt, &list_y, padded_height, line_gap)
 				text_y := y_start + center_x(list_y - y_start, padded_height)
 
 				if idx >= len(event_list) || idx < 0 {
@@ -1137,6 +1197,59 @@ main :: proc() {
 				draw_text(&pt, short_name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
 				idx -= 1
 			}
+
+			far_fold_x := (pt.width / 4) * 3
+
+			list_y = pt.em
+			header_height = get_text_height(&pt, .H1Size, .DefaultFontBold)
+			draw_text(&pt, "Today's Schedule", Vec2{far_fold_x, next_y(&pt, &list_y, header_height, line_gap)}, .H1Size, .DefaultFontBold, pt.colors.text)
+			list_y += (pt.em * 0.1)
+
+			list_start := list_y
+
+			event_height := get_text_height(&pt, .H1Size, .DefaultFont)
+			padded_height := event_height + pt.em
+
+			idx = day_start_idx
+			exit_next := false
+			i := 0
+			for ;; i += 1 {
+				event := &event_list[idx]
+
+				if exit_next {
+					i -= 1
+					break
+				}
+				if time_compare(end_time, event.time) < 0 {
+					exit_next = true
+				}
+
+				y_start := next_y(&pt, &list_y, padded_height, line_gap)
+				text_y := y_start + center_x(list_y - y_start, padded_height)
+
+				short_name := trunc_name(&pt, event.name, event_chars, .H1Size, .DefaultFont)
+
+				time_str := short_time_to_str(to_local_time(event.time))
+				time_height := get_text_height(&pt, .H1Size, .DefaultFont)
+				time_width := measure_text(&pt, time_str, .H1Size, .DefaultFont)
+
+				time_pad := (pt.em / 4) * 3
+
+				entry_x := far_fold_x + (pt.em / 2)
+				draw_text(&pt, time_str, Vec2{entry_x, text_y + ((padded_height / 3) - (time_height / 2))}, .H1Size, .DefaultFont, pt.colors.text)
+				draw_text(&pt, short_name, Vec2{entry_x + time_pad + time_width, text_y}, .H1Size, .DefaultFont, pt.colors.text)
+
+				idx += 1
+			}
+
+			smidge := pt.em * 0.11
+			line_y := list_start + ((padded_height + line_gap) * f64(i - 1) + (padded_height))
+			line_end_x := pt.width - (2 * pt.em)
+
+			draw_line(&pt, Vec2{far_fold_x, line_y - smidge}, Vec2{line_end_x, line_y - smidge}, smidge, pt.colors.active[0])
+			draw_line(&pt, Vec2{far_fold_x, line_y + smidge}, Vec2{line_end_x, line_y + smidge}, smidge, pt.colors.active[0])
+			draw_circle(&pt, Vec2{far_fold_x, line_y}, (pt.em * 0.4), 1, pt.colors.active[0])
+			draw_circle(&pt, Vec2{far_fold_x, line_y}, (pt.em * 0.3), 1, pt.colors.bg2)
 		}
 
 		flush_rects(&pt)

@@ -14,7 +14,7 @@ Colors :: struct {
 	dark_text:   BVec4,
 	error:       BVec4,
 
-	active: [5]BVec4,
+	active: [6]BVec4,
 }
 
 ColorMode :: enum {
@@ -26,14 +26,14 @@ ColorMode :: enum {
 default_colors :: proc "contextless" (pt: ^Platform_State, is_dark: bool) {
 	colors := &pt.colors
 
-	colors.active[0] = BVec4{0xe7, 0x6f, 0x51, 255}
-	colors.active[1] = BVec4{0xF4, 0xa2, 0x61, 255}
-	colors.active[2] = BVec4{0xe9, 0xc4, 0x6a, 255}
-	colors.active[3] = BVec4{0x2a, 0x9d, 0x8f, 255}
-	colors.active[4] = BVec4{0x26, 0x46, 0x53, 255}
+	colors.active[0] = hex_to_bvec(0xe76f51)
+	colors.active[1] = hex_to_bvec(0xF4a261)
+	colors.active[2] = hex_to_bvec(0xe9c46a)
+	colors.active[3] = hex_to_bvec(0xa36790)
+	colors.active[4] = hex_to_bvec(0x2a9d8f)
 
-	colors.error     = BVec4{0xFF, 0x3F, 0x83, 255}
-	colors.dark_text = BVec4{   3,    3,    3, 255}
+	colors.error     = hex_to_bvec(0xFF3F83)
+	colors.dark_text = hex_to_bvec(0x030303)
 
 	// dark mode
 	if is_dark {
@@ -68,6 +68,14 @@ hsv2rgb :: proc(c: FVec3) -> FVec3 {
 }
 
 hex_to_bvec :: proc "contextless" (v: u32) -> BVec4 {
+	r := u8(v >> 16)
+	g := u8(v >> 8)
+	b := u8(v >> 0)
+
+	return BVec4{r, g, b, 255}
+}
+
+hex_a_to_bvec :: proc "contextless" (v: u32) -> BVec4 {
 	a := u8(v >> 24)
 	r := u8(v >> 16)
 	g := u8(v >> 8)
