@@ -1104,10 +1104,14 @@ main :: proc() {
 	defer delete(event_list)
 
 	feed_calendars(&intern, &event_list, now)
-	last_updated := time.now()
+	calendar_last_updated := time.now()
+	icon_last_updated     := time.now()
+	icon_should_update := true
 
 	ev := PlatformEvent{}
 	main_loop: for {
+		defer icon_should_update = false
+
 		event_loop: for {
 			ev = get_next_event(&pt, !pt.has_focus)
 			if ev.type == .None {
@@ -1138,19 +1142,25 @@ main :: proc() {
 				}
 			}
 		}
-
 		setup_frame(&pt, int(stored_height), int(stored_width))
-		blit_clear(&pt, pt.colors.bg)
 
 		current_time := time.now()
 
-		update_window := time.diff(last_updated, current_time)
-		if time.duration_minutes(update_window) >= 5 {
+		calendar_update_window := time.diff(calendar_last_updated, current_time)
+		if time.duration_minutes(calendar_update_window) >= 5 {
 			delete(event_list)
 			event_list = make([dynamic]Event)
 
 			feed_calendars(&intern, &event_list, current_time)
-			last_updated = time.now()
+			calendar_last_updated = time.now()
+		}
+
+		icon_update_window := time.diff(icon_last_updated, current_time)
+		if time.duration_seconds(icon_update_window) >= 10 {
+			icon_should_update = true
+
+			blit_clear(&pt)
+			icon_last_updated = time.now()
 		}
 
 		side_min := min(pt.width / 2.5, pt.height / 2.5)
@@ -1189,14 +1199,19 @@ main :: proc() {
 				radius := ((pt.em * ring_shrink) / 2) + side_min
 				draw_circle(&pt, Vec2{pt.width / 2, pt.height / 2}, radius, perc, pt.colors.active[color_idx])
 
-				blit_circle(&pt, 128 * 0.75, perc, pt.colors.active[color_idx])
+				if icon_should_update {
+					blit_circle(&pt, 128 * 0.75, perc, pt.colors.active[color_idx])
+				}
 			}
 
 			inner_center := Vec2{pt.width / 2, pt.height / 2}
 			inner_radius := side_min / 1.5
 			draw_circle(&pt, inner_center, inner_radius, 1, pt.colors.bg2)
-			blit_circle(&pt, 128.0 * 0.5, 1, pt.colors.bg2, true)
-			set_window_icon(&pt)
+
+			if icon_should_update {
+				blit_circle(&pt, 128.0 * 0.5, 1, pt.colors.bg2, true)
+				set_window_icon(&pt)
+			}
 
 			container := Rect{x_pos, y_pos, side_min, side_min}
 

@@ -1,6 +1,8 @@
 #+build darwin, windows, linux
 package main
 
+import "base:runtime"
+
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -353,18 +355,8 @@ message_box :: proc(pt: ^Platform_State, title: cstring, message: cstring) {
 	SDL.ShowSimpleMessageBox(SDL.MESSAGEBOX_ERROR, title, message, pt.gfx.window)
 }
 
-blit_clear :: proc(pt: ^Platform_State, color: BVec4) {
-	icon_buffer_bytes := slice.bytes_from_ptr(pt.gfx.icon.pixels, pt.gfx.icon_width * pt.gfx.icon_height * 4)
-	icon_buffer := transmute([]u32)(icon_buffer_bytes)
-
-	for x := 0; x < pt.gfx.icon_width; x += 1 {
-		for y := 0; y < pt.gfx.icon_height; y += 1 {
-			pixel := color
-
-			flat_pixel := u32(pixel.r) << 24 | u32(pixel.g) << 16 | u32(pixel.b) << 8 | 0
-			icon_buffer[(y * pt.gfx.icon_width) + x] = flat_pixel
-		}
-	}
+blit_clear :: proc(pt: ^Platform_State) {
+	runtime.memset(pt.gfx.icon.pixels, 0, pt.gfx.icon_width * pt.gfx.icon_height * 4)
 }
 
 bvec4_to_dvec3 :: proc(color: BVec4) -> glsl.dvec3 {
@@ -401,7 +393,6 @@ blit_circle :: proc(pt: ^Platform_State, radius: f64, fill_perc: f64, color: BVe
 			alpha := 1.0 - glsl.step(0.5, glsl.length(pos))
 			alpha = (1.0 - glsl.step(fill_perc, angle)) * alpha
 
-			alpha_vec := glsl.dvec3{alpha, alpha, alpha}
 			vc := ((1.0 - alpha) * bvec4_to_dvec3(old_pixel)) + alpha*bvec4_to_dvec3(pixel)
 			vc = glsl.clamp(vc, 0, 255)
 			
