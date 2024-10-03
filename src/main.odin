@@ -6,6 +6,7 @@ import "core:c"
 import "core:c/libc"
 import "core:sys/posix"
 
+import "core:mem"
 import "core:math"
 import "core:os"
 import "core:fmt"
@@ -576,6 +577,7 @@ parse_ical_data :: proc(intern: ^strings.Intern, _data: string, tasks: ^[dynamic
 		for k, &v in uid_map {
 			delete(v)
 		}
+		delete(uid_map)
 	}
 
 	for ev, idx in cal_events {
@@ -658,7 +660,7 @@ trunc_name :: proc(pt: ^Platform_State, name: string, max_chars: int, scale: Fon
 	}
 }
 
-Url :: struct {
+CalUrl :: struct {
 	path: string,
 	rename: string,
 	redact: bool,
@@ -667,7 +669,62 @@ RequestState :: struct {
 	handle: rawptr,
 	b_header: strings.Builder,
 	b_body: strings.Builder,
-	url: Url,
+	url: CalUrl,
+}
+
+CalFile :: struct {
+	path: string,
+	rename: string,
+	redact: bool,
+}
+ExprByDay :: struct {
+	pos: string,
+	day: string,
+}
+TaskExpr :: struct {
+	name:            string,
+	start_time:      string,
+	freq:            string,
+	days:       []ExprByDay,
+	tz:              string,
+	interval:           int,
+	count:              int,
+	modifiers:     []string,
+}
+CalConfig :: struct {
+	files: []CalFile,
+	urls:  []CalUrl,
+	tasks: []TaskExpr,
+}
+destroy_cal_config :: proc(conf: ^CalConfig) {
+	for file in conf.files {
+		delete(file.path)
+		delete(file.rename)
+	}
+	delete(conf.files)
+
+	for url in conf.urls {
+		delete(url.path)
+		delete(url.rename)
+	}
+	delete(conf.urls)
+
+	for task in conf.tasks {
+		delete(task.name)
+		delete(task.start_time)
+		delete(task.freq)
+		for daypos in task.days {
+			delete(daypos.pos)
+			delete(daypos.day)
+		}
+		delete(task.days)
+		delete(task.tz)
+		for mod in task.modifiers {
+			delete(mod)
+		}
+		delete(task.modifiers)
+	}
+	delete(conf.tasks)
 }
 
 load_tasks :: proc(intern: ^strings.Intern, task_list: ^[dynamic]Task, config_path: string) {
@@ -703,38 +760,17 @@ load_tasks :: proc(intern: ^strings.Intern, task_list: ^[dynamic]Task, config_pa
 	}
 	defer delete(config)
 
-	File :: struct {
-		path: string,
-		rename: string,
-		redact: bool,
-	}
-	ExprByDay :: struct {
-		pos: string,
-		day: string,
-	}
-	TaskExpr :: struct {
-		name:            string,
-		start_time:      string,
-		freq:            string,
-		days:       []ExprByDay,
-		tz:              string,
-		interval:           int,
-		count:              int,
-		modifiers:     []string,
-	}
-	CalConfig :: struct {
-		files: []File,
-		urls:  []Url,
-		tasks: []TaskExpr,
-	}
 	cal_config := CalConfig{}
 	err := json.unmarshal(config, &cal_config)
 	if err != nil {
 		fmt.printf("%v\n", err)
 		return
 	}
+	defer destroy_cal_config(&cal_config)
 
 	home_dir := os.get_env("HOME")
+	defer delete(home_dir)
+
 	for file in cal_config.files {
 		path := ""
 		if file.path[0] == '~' {
@@ -935,9 +971,10 @@ load_tasks :: proc(intern: ^strings.Intern, task_list: ^[dynamic]Task, config_pa
 			append(&day_pos, new_day)
 		}
 
+		task_name, _ := strings.intern_get(intern, task.name)
 		tz_cstr, _ := strings.intern_get_cstring(intern, task.tz)
 		cur_task := Task{
-			name       = task.name,
+			name       = task_name,
 			start_time = start_time,
 			start_tz   = tz_cstr,
 			freq       = freq,
@@ -950,12 +987,11 @@ load_tasks :: proc(intern: ^strings.Intern, task_list: ^[dynamic]Task, config_pa
 	}
 }
 
-generate_events :: proc(intern: ^strings.Intern, task_list: []Task, now: time.Time) -> []Event {
+generate_events :: proc(intern: ^strings.Intern, event_list: ^[dynamic]Event, task_list: []Task, now: time.Time) {
 	yesterday := get_start_of_day(time.time_add(now, -(24 * time.Hour)))
 	today := get_start_of_day(now)
 	tomorrow := get_start_of_day(time.time_add(now, (24 * time.Hour)))
 
-	event_list := make([dynamic]Event)
 	defer {
 		unsetenv("TZ")
 		tzset()
@@ -968,22 +1004,22 @@ generate_events :: proc(intern: ^strings.Intern, task_list: []Task, now: time.Ti
 			task_time := to_utc_time(task.start_time)
 			reset_tz()
 
-			append(&event_list, Event{task.name, task.calendar, task.redact, task_time})
+			append(event_list, Event{task.name, task.calendar, task.redact, task_time})
 		case .Daily:
-			append(&event_list, Event{task.name, task.calendar, task.redact, set_time(yesterday, task)})
-			append(&event_list, Event{task.name, task.calendar, task.redact, set_time(today,     task)})
-			append(&event_list, Event{task.name, task.calendar, task.redact, set_time(tomorrow,  task)})
+			append(event_list, Event{task.name, task.calendar, task.redact, set_time(yesterday, task)})
+			append(event_list, Event{task.name, task.calendar, task.redact, set_time(today,     task)})
+			append(event_list, Event{task.name, task.calendar, task.redact, set_time(tomorrow,  task)})
 		case .Weekly:
 			for daypos in task.day_pos {
 				early_ev := Event{task.name, task.calendar, task.redact, get_weekly(today, task, false)}
 				late_ev  := Event{task.name, task.calendar, task.redact, get_weekly(today, task, true)}
 
 				if task.until_time._nsec == 0 || time_compare(early_ev.time, task.until_time) < 0 {
-					append(&event_list, early_ev)
+					append(event_list, early_ev)
 				}
 
 				if task.until_time._nsec == 0 || time_compare(late_ev.time, task.until_time) < 0 {
-					append(&event_list, late_ev)
+					append(event_list, late_ev)
 				}
 			}
 		case .Monthly:
@@ -1003,20 +1039,18 @@ generate_events :: proc(intern: ^strings.Intern, task_list: []Task, now: time.Ti
 				late_ev := Event{task.name, task.calendar, task.redact, tm}
 
 				if task.until_time._nsec == 0 || time_compare(early_ev.time, task.until_time) < 0 {
-					append(&event_list, early_ev)
+					append(event_list, early_ev)
 				}
 
 				if task.until_time._nsec == 0 || time_compare(late_ev.time, task.until_time) < 0 {
-					append(&event_list, late_ev)
+					append(event_list, late_ev)
 				}
 			}
 		}
 	}
-
-	return event_list[:]
 }
 
-feed_calendars :: proc(intern: ^strings.Intern, now: time.Time) -> (evs: []Event) {
+feed_calendars :: proc(intern: ^strings.Intern, event_list: ^[dynamic]Event, now: time.Time) -> (evs: []Event) {
 	task_list := make([dynamic]Task)
 	defer {
 		for &task in task_list {
@@ -1026,18 +1060,18 @@ feed_calendars :: proc(intern: ^strings.Intern, now: time.Time) -> (evs: []Event
 	}
 
 	load_tasks(intern, &task_list, "cal.json")
-	event_list := generate_events(intern, task_list[:], now)
+	generate_events(intern, event_list, task_list[:], now)
 
 	event_sort_proc :: proc(i, j: Event) -> bool {
 		dur := time.diff(i.time, j.time)
 		return dur > 0
 	}
 	slice.sort_by(event_list[:], event_sort_proc)
-
-	return event_list[:]
+	return
 }
 
 main :: proc() {
+
 	now := time.now()
 	start_time := get_start_of_day(now)
 	end_time   := get_end_of_day(now)
@@ -1054,6 +1088,25 @@ main :: proc() {
 	create_context(&pt, "alarm", 1280, 720)
 	if !setup_graphics(&pt) { return }
 
+	track: mem.Tracking_Allocator
+	mem.tracking_allocator_init(&track, context.allocator)
+	context.allocator = mem.tracking_allocator(&track)
+	defer {
+		if len(track.allocation_map) > 0 {
+			fmt.eprintf("=== %v allocations not freed: ===\n", len(track.allocation_map))
+				for _, entry in track.allocation_map {
+					fmt.eprintf("- %v bytes @ %v\n", entry.size, entry.location)
+				}
+		}
+		if len(track.bad_free_array) > 0 {
+			fmt.eprintf("=== %v incorrect frees: ===\n", len(track.bad_free_array))
+				for entry in track.bad_free_array {
+					fmt.eprintf("- %p @ %v\n", entry.memory, entry.location)
+				}
+		}
+		mem.tracking_allocator_destroy(&track)
+	}
+
 	stored_height := pt.height
 	stored_width  := pt.width
 
@@ -1064,8 +1117,12 @@ main :: proc() {
 
 	intern: strings.Intern
 	strings.intern_init(&intern)
+	defer strings.intern_destroy(&intern)
 
-	event_list := feed_calendars(&intern, now)
+	event_list := make([dynamic]Event)
+	defer delete(event_list)
+
+	feed_calendars(&intern, &event_list, now)
 	last_updated := time.now()
 
 	ev := PlatformEvent{}
@@ -1109,7 +1166,9 @@ main :: proc() {
 		update_window := time.diff(last_updated, current_time)
 		if time.duration_minutes(update_window) >= 5 {
 			delete(event_list)
-			event_list = feed_calendars(&intern, current_time)
+			event_list = make([dynamic]Event)
+
+			feed_calendars(&intern, &event_list, current_time)
 			last_updated = time.now()
 		}
 
