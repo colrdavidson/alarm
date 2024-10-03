@@ -80,8 +80,19 @@ Task :: struct {
 }
 
 Event :: struct {
-	name:    string,
-	time: time.Time,
+	name:     string,
+	calendar: string,
+	redact:     bool,
+
+	time:  time.Time,
+}
+
+event_name :: proc(ev: ^Event, redact_enabled: bool) -> string {
+	if ev.redact && redact_enabled{
+		return fmt.tprintf("%v Event", ev.calendar)
+	} else {
+		return ev.name
+	}
 }
 
 time_to_ctm :: proc(tm: time.Time) -> libc.tm {
@@ -914,10 +925,6 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 
 	for &task, idx in task_list {
 
-		task_name := task.name
-		if task.redact {
-			task_name = fmt.aprintf("%s Event", task.calendar)
-		}
 
 		#partial switch task.freq {
 		case .Once:
@@ -925,15 +932,15 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 			task_time := to_utc_time(task.start_time)
 			reset_tz()
 
-			append(&event_list, Event{task_name, task_time})
+			append(&event_list, Event{task.name, task.calendar, task.redact, task_time})
 		case .Daily:
-			append(&event_list, Event{task_name, set_time(yesterday, task)})
-			append(&event_list, Event{task_name, set_time(today,     task)})
-			append(&event_list, Event{task_name, set_time(tomorrow,  task)})
+			append(&event_list, Event{task.name, task.calendar, task.redact, set_time(yesterday, task)})
+			append(&event_list, Event{task.name, task.calendar, task.redact, set_time(today,     task)})
+			append(&event_list, Event{task.name, task.calendar, task.redact, set_time(tomorrow,  task)})
 		case .Weekly:
 			for daypos in task.day_pos {
-				early_ev := Event{task_name, get_weekly(today, task, false)}
-				late_ev  := Event{task_name, get_weekly(today, task, true)}
+				early_ev := Event{task.name, task.calendar, task.redact, get_weekly(today, task, false)}
+				late_ev  := Event{task.name, task.calendar, task.redact, get_weekly(today, task, true)}
 
 				if task.until_time._nsec == 0 || time_compare(early_ev.time, task.until_time) < 0 {
 					append(&event_list, early_ev)
@@ -950,14 +957,14 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 					fmt.printf("failed to apply rule\n")
 					continue
 				}
-				early_ev := Event{task_name, tm}
+				early_ev := Event{task.name, task.calendar, task.redact, tm}
 
 				tm, ok = get_monthly(today, task, daypos, true)
 				if !ok {
 					fmt.printf("failed to apply rule\n")
 					continue
 				}
-				late_ev := Event{task_name, tm}
+				late_ev := Event{task.name, task.calendar, task.redact, tm}
 
 				if task.until_time._nsec == 0 || time_compare(early_ev.time, task.until_time) < 0 {
 					append(&event_list, early_ev)
@@ -1004,17 +1011,10 @@ main :: proc() {
 	}
 	slice.sort_by(event_list[:], event_sort_proc)
 
-/*
-	fmt.printf("%v | NOW\n", now)
-	fmt.printf("%v | WHEEL START\n", start_time)
-	fmt.printf("%v | TODAY END\n", end_time)
-	for event, idx in event_list {
-		fmt.printf("%v | %s\n", time_to_str(to_local_time(event.time)), event.name)
-	}
-*/
+	max_visible := 5
+	list_max    := 5
 
-	max_visible := 6
-	list_max    := 6
+	redact_enabled := true
 
 	ev := PlatformEvent{}
 	main_loop: for {
@@ -1038,6 +1038,14 @@ main :: proc() {
 				pt.has_focus = true
 			case .FocusLost:
 				pt.has_focus = false
+			case .KeyDown:
+				if ev.key == .RightAlt {
+					redact_enabled = false
+				}
+			case .KeyUp:
+				if ev.key == .RightAlt {
+					redact_enabled = true
+				}
 			}
 		}
 
@@ -1094,6 +1102,8 @@ main :: proc() {
 			container := Rect{x_pos, y_pos, side_min, side_min}
 
 			cur_event := &event_list[cur_event_idx]
+			ev_name := event_name(cur_event, redact_enabled)
+
 			h_1 := get_text_height(&pt, .H1Size, .DefaultFontBold)
 			h_2 := get_text_height(&pt, .H1Size, .DefaultFont)
 			h_3 := get_text_height(&pt, .H1Size, .MonoFont)
@@ -1108,24 +1118,24 @@ main :: proc() {
 
 			wheel_text := "Up Next:"
 			up_next_width := measure_text(&pt, wheel_text, .H1Size, .DefaultFontBold)
-			event_name_width := measure_text(&pt, cur_event.name, .H1Size, .DefaultFont)
+			event_name_width := measure_text(&pt, ev_name, .H1Size, .DefaultFont)
 			rem_time_width := measure_text(&pt, rem_time_str, .H1Size, .MonoFont)
 			max_width := max(up_next_width, event_name_width, rem_time_width)
 
-			name := fmt.ctprintf("Chili | Up Next: %s\n", cur_event.name)
+			name := fmt.ctprintf("Chili | Up Next: %s\n", ev_name)
 
 			inner_diam := inner_radius * 2
 			if max_width < inner_diam {
 				x := center_x(inner_diam, max_width)
 				draw_text(&pt, wheel_text, Vec2{(inner_center.x - inner_radius) + x, container.y + y}, .H1Size, .DefaultFontBold, pt.colors.text)
 
-				short_name := trunc_name(&pt, cur_event.name, event_chars, .H1Size, .DefaultFont)
+				short_name := trunc_name(&pt, ev_name, event_chars, .H1Size, .DefaultFont)
 				draw_text(&pt, short_name, Vec2{(inner_center.x - inner_radius) + x, container.y + y + h_1 + h_gap}, .H1Size, .DefaultFont, pt.colors.text)
 
 				rem_str_x := center_x(inner_diam, rem_time_width)
 				draw_text(&pt, rem_time_str, Vec2{(inner_center.x - inner_radius) + rem_str_x, container.y + y + h_1 + h_gap + h_2 + h_gap}, .H1Size, .MonoFont, pt.colors.text)
 			} else {
-				name = fmt.ctprintf("%s\n", cur_event.name)
+				name = fmt.ctprintf("%s\n", ev_name)
 			}
 
 			set_window_title(&pt, name)
@@ -1158,6 +1168,7 @@ main :: proc() {
 				}
 
 				event := &event_list[idx]
+				ev_name := event_name(event, redact_enabled)
 
 				text_color := pt.colors.dark_text
 				if idx < (cur_event_idx + max_visible) {
@@ -1167,7 +1178,7 @@ main :: proc() {
 					text_color = pt.colors.text
 				}
 
-				short_name := trunc_name(&pt, event.name, event_chars, .H1Size, .DefaultFont)
+				short_name := trunc_name(&pt, ev_name, event_chars, .H1Size, .DefaultFont)
 				draw_text(&pt, short_name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, text_color)
 				idx += 1
 			}
@@ -1193,7 +1204,9 @@ main :: proc() {
 				}
 
 				event := &event_list[idx]
-				short_name := trunc_name(&pt, event.name, event_chars, .H1Size, .DefaultFont)
+				ev_name := event_name(event, redact_enabled)
+
+				short_name := trunc_name(&pt, ev_name, event_chars, .H1Size, .DefaultFont)
 				draw_text(&pt, short_name, Vec2{pt.em * 1.3, text_y}, .H1Size, .DefaultFont, pt.colors.text)
 				idx -= 1
 			}
@@ -1215,6 +1228,7 @@ main :: proc() {
 			i := 0
 			for ;; i += 1 {
 				event := &event_list[idx]
+				ev_name := event_name(event, redact_enabled)
 
 				if exit_next {
 					i -= 1
@@ -1227,7 +1241,7 @@ main :: proc() {
 				y_start := next_y(&pt, &list_y, padded_height, line_gap)
 				text_y := y_start + center_x(list_y - y_start, padded_height)
 
-				short_name := trunc_name(&pt, event.name, event_chars, .H1Size, .DefaultFont)
+				short_name := trunc_name(&pt, ev_name, event_chars, .H1Size, .DefaultFont)
 
 				time_str := short_time_to_str(to_local_time(event.time))
 				time_height := get_text_height(&pt, .H1Size, .DefaultFont)
