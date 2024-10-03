@@ -87,6 +87,10 @@ Event :: struct {
 	time:  time.Time,
 }
 
+task_destroy :: proc(task: ^Task) {
+	delete(task.day_pos)
+}
+
 event_name :: proc(ev: ^Event, redact_enabled: bool) -> string {
 	if ev.redact && redact_enabled{
 		return fmt.tprintf("%v Event", ev.calendar)
@@ -405,8 +409,12 @@ parse_ical_rrule :: proc(task: ^Task, rrule: string) -> (ok: bool) {
 	task.day_pos = make([dynamic]TaskDayPos)
 
 	rule_chunks := strings.split(rrule, ";")
+	defer delete(rule_chunks)
+
 	for mod in rule_chunks {
 		mod_chunks := strings.split(mod, "=")
+		defer delete(mod_chunks)
+
 		key := mod_chunks[0]
 		val := mod_chunks[1]
 
@@ -436,6 +444,8 @@ parse_ical_rrule :: proc(task: ^Task, rrule: string) -> (ok: bool) {
 
 		case "BYDAY":
 			daypos_chunks := strings.split(val, ",")
+			defer delete(daypos_chunks)
+
 			for daypos in daypos_chunks {
 				new_day := TaskDayPos{}
 
@@ -497,11 +507,12 @@ CalEvent :: struct {
 	uid:           string,
 }
 
-parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool, rename: string) {
+parse_ical_data :: proc(intern: ^strings.Intern, _data: string, tasks: ^[dynamic]Task, redact: bool, rename: string) {
 	data := _data
 
 	cal_name := ""
 	cal_events := make([dynamic]CalEvent)
+	defer delete(cal_events)
 	ev := CalEvent{}
 
 	in_event := false
@@ -558,10 +569,15 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool, rena
 			}
 		}
 	}
-	calendar_name := strings.clone(cal_name)
 
 	// Make a recurrence set chain, so we can refer to parents for event tweaks
 	uid_map := make(map[string][dynamic]CalEvent)
+	defer {
+		for k, &v in uid_map {
+			delete(v)
+		}
+	}
+
 	for ev, idx in cal_events {
 		_, ok := uid_map[ev.uid]
 		if !ok {
@@ -573,15 +589,19 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool, rena
 	}
 
 	latest_events := make([dynamic]CalEvent)
+	defer delete(latest_events)
+
 	for _, cal_arr in uid_map {
 		last_ev := cal_arr[len(cal_arr)-1]
 
 		append(&latest_events, last_ev)
 	}
 
+	calendar_name: string
 	if redact && rename != "" {
-		delete(calendar_name)
-		calendar_name = strings.clone(rename)
+		calendar_name, _ = strings.intern_get(intern, rename)
+	} else {
+		calendar_name, _ = strings.intern_get(intern, cal_name)
 	}
 
 	// Chug through and parse out timestamps and rules
@@ -602,13 +622,15 @@ parse_ical_data :: proc(_data: string, tasks: ^[dynamic]Task, redact: bool, rena
 			continue
 		}
 
+		name, _ := strings.intern_get(intern, ev.summary)
+		tz_cstr, _ := strings.intern_get_cstring(intern, tz_str)
 		task := Task{
-			name = strings.clone(ev.summary),
+			name = name,
 			calendar = calendar_name,
 			redact = redact,
 
 			start_time = start_time,
-			start_tz = strings.clone_to_cstring(tz_str),
+			start_tz = tz_cstr,
 
 			interval = 1,
 			count = 0,
@@ -648,7 +670,7 @@ RequestState :: struct {
 	url: Url,
 }
 
-load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
+load_tasks :: proc(intern: ^strings.Intern, task_list: ^[dynamic]Task, config_path: string) {
 	config, ok := os.read_entire_file_from_filename(config_path)
 	if !ok {
 		// If we're a .app, try harder...
@@ -661,8 +683,14 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 
 			app_dir := filepath.dir(app_path)
 			tmp_dir := filepath.join([]string{app_dir, "../../../.."})
+			defer delete(tmp_dir)
+
 			real_dir := filepath.clean(tmp_dir)
+			defer delete(real_dir)
+
 			second_try := filepath.join([]string{real_dir, config_path})
+			defer delete(second_try)
+
 			config, ok = os.read_entire_file_from_filename(second_try)
 			if !ok {
 				fmt.printf("Unable to load calendar config @ %s\n", second_try)
@@ -673,6 +701,7 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			return
 		}
 	}
+	defer delete(config)
 
 	File :: struct {
 		path: string,
@@ -717,13 +746,16 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			fmt.printf("Unable to find ical data at %s\n", path)
 			return
 		}
+		defer delete(out)
 
-		parse_ical_data(string(out), task_list, file.redact, file.rename)
+		parse_ical_data(intern, string(out), task_list, file.redact, file.rename)
 	}
 
 	multi_handle := curl.multi_init()
 
 	req_arr := make([]RequestState, len(cal_config.urls))
+	defer delete(req_arr)
+
 	for _, idx in req_arr {
 		req := RequestState{
 			handle   = curl.easy_init(),
@@ -767,9 +799,9 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			for &req in req_arr {
 				if msg.easy_handle == req.handle {
 					cal_data := strings.to_string(req.b_body)
-					parse_ical_data(cal_data, task_list, req.url.redact, req.url.rename)
-					strings.builder_reset(&req.b_header)
-					strings.builder_reset(&req.b_body)
+					parse_ical_data(intern, cal_data, task_list, req.url.redact, req.url.rename)
+					strings.builder_destroy(&req.b_header)
+					strings.builder_destroy(&req.b_body)
 				}
 			}
 		}
@@ -783,6 +815,8 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 
 	for task in cal_config.tasks {
 		chunks := strings.split(task.start_time, "@")
+		defer delete(chunks)
+
 		if len(chunks) != 2 {
 			fmt.printf("Failed to parse task! %#v\n", task)
 			return
@@ -792,6 +826,8 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 		month := 1
 		day := 1
 		ymd := strings.split(chunks[0], "-")
+		defer delete(ymd)
+
 		if len(ymd) != 3 && len(ymd) != 1 {
 			fmt.printf("Invalid date format! %s\n", chunks[0])
 			return
@@ -820,9 +856,11 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 		}
 
 		time_chunks := strings.fields(chunks[1])
+		defer delete(time_chunks)
 
 		min := 0
 		hour_min := strings.split(time_chunks[0], ":")
+		defer delete(hour_min)
 
 		hour, ok4 := strconv.parse_int(hour_min[0], 10)
 		if !ok4 {
@@ -848,35 +886,9 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			return
 		}
 
-		day_pos := make([dynamic]TaskDayPos)
-		for daypos, idx in task.days {
-			new_day := TaskDayPos{}
-			switch daypos.pos {
-			case "first":  new_day.pos = 1
-			case "second": new_day.pos = 2
-			case "third":  new_day.pos = 3
-			case "fourth": new_day.pos = 4
-			case "fifth":  new_day.pos = 5
-			case "last":   new_day.pos = -1
-			case "":       new_day.pos = 0
-			case:
-				fmt.printf("Invalid day pos! %s\n", daypos.pos)
-				return
-			}
-
-			switch daypos.day {
-			case "sun": new_day.day = .Sunday
-			case "mon": new_day.day = .Monday
-			case "tue": new_day.day = .Tuesday
-			case "wed": new_day.day = .Wednesday
-			case "thu": new_day.day = .Thursday
-			case "fri": new_day.day = .Friday
-			case "sat": new_day.day = .Saturday
-			case:
-				fmt.printf("Invalid task day! %s\n", daypos.day)
-				return
-			}
-			append(&day_pos, new_day)
+		interval := task.interval
+		if interval == 0 {
+			interval = 1
 		}
 
 		freq := TaskFreq.Once
@@ -890,20 +902,46 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 			fmt.printf("Invalid task freq %s\n", task.freq)
 		}
 
-		interval := task.interval
-		if interval == 0 {
-			interval = 1
+		day_pos := make([dynamic]TaskDayPos)
+		for daypos, idx in task.days {
+			new_day := TaskDayPos{}
+			switch daypos.pos {
+			case "first":  new_day.pos = 1
+			case "second": new_day.pos = 2
+			case "third":  new_day.pos = 3
+			case "fourth": new_day.pos = 4
+			case "fifth":  new_day.pos = 5
+			case "last":   new_day.pos = -1
+			case "":       new_day.pos = 0
+			case:
+				fmt.printf("Invalid day pos! %s\n", daypos.pos)
+				delete(day_pos)
+				return
+			}
+
+			switch daypos.day {
+			case "sun": new_day.day = .Sunday
+			case "mon": new_day.day = .Monday
+			case "tue": new_day.day = .Tuesday
+			case "wed": new_day.day = .Wednesday
+			case "thu": new_day.day = .Thursday
+			case "fri": new_day.day = .Friday
+			case "sat": new_day.day = .Saturday
+			case:
+				fmt.printf("Invalid task day! %s\n", daypos.day)
+				delete(day_pos)
+				return
+			}
+			append(&day_pos, new_day)
 		}
 
-		tz_str := strings.clone_to_cstring(task.tz)
-		months := []TaskMonth{}
+		tz_cstr, _ := strings.intern_get_cstring(intern, task.tz)
 		cur_task := Task{
 			name       = task.name,
 			start_time = start_time,
-			start_tz   = tz_str,
+			start_tz   = tz_cstr,
 			freq       = freq,
 			day_pos    = day_pos,
-			months     = months,
 
 			interval = interval,
 			count    = task.count,
@@ -912,7 +950,7 @@ load_tasks :: proc(task_list: ^[dynamic]Task, config_path: string) {
 	}
 }
 
-generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
+generate_events :: proc(intern: ^strings.Intern, task_list: []Task, now: time.Time) -> []Event {
 	yesterday := get_start_of_day(time.time_add(now, -(24 * time.Hour)))
 	today := get_start_of_day(now)
 	tomorrow := get_start_of_day(time.time_add(now, (24 * time.Hour)))
@@ -924,8 +962,6 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 	}
 
 	for &task, idx in task_list {
-
-
 		#partial switch task.freq {
 		case .Once:
 			set_tz(task.start_tz)
@@ -980,12 +1016,17 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 	return event_list[:]
 }
 
-feed_calendars :: proc(now: time.Time) -> []Event {
+feed_calendars :: proc(intern: ^strings.Intern, now: time.Time) -> (evs: []Event) {
 	task_list := make([dynamic]Task)
-	defer delete(task_list)
+	defer {
+		for &task in task_list {
+			task_destroy(&task)
+		}
+		delete(task_list)
+	}
 
-	load_tasks(&task_list, "cal.json")
-	event_list := generate_events(task_list[:], now)
+	load_tasks(intern, &task_list, "cal.json")
+	event_list := generate_events(intern, task_list[:], now)
 
 	event_sort_proc :: proc(i, j: Event) -> bool {
 		dur := time.diff(i.time, j.time)
@@ -1021,7 +1062,10 @@ main :: proc() {
 
 	redact_enabled := true
 
-	event_list := feed_calendars(now)
+	intern: strings.Intern
+	strings.intern_init(&intern)
+
+	event_list := feed_calendars(&intern, now)
 	last_updated := time.now()
 
 	ev := PlatformEvent{}
@@ -1065,7 +1109,7 @@ main :: proc() {
 		update_window := time.diff(last_updated, current_time)
 		if time.duration_minutes(update_window) >= 5 {
 			delete(event_list)
-			event_list = feed_calendars(current_time)
+			event_list = feed_calendars(&intern, current_time)
 			last_updated = time.now()
 		}
 
@@ -1137,10 +1181,11 @@ main :: proc() {
 			rem_time_width := measure_text(&pt, rem_time_str, .H1Size, .MonoFont)
 			max_width := max(up_next_width, event_name_width, rem_time_width)
 
-			name := fmt.ctprintf("Chili | Up Next: %s\n", ev_name)
-
+			name: cstring
 			inner_diam := inner_radius * 2
 			if max_width < inner_diam {
+				name = fmt.ctprintf("Chili | Up Next: %s\n", ev_name)
+
 				x := center_x(inner_diam, max_width)
 				draw_text(&pt, wheel_text, Vec2{(inner_center.x - inner_radius) + x, container.y + y}, .H1Size, .DefaultFontBold, pt.colors.text)
 
