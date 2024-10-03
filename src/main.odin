@@ -980,12 +980,26 @@ generate_events :: proc(task_list: []Task, now: time.Time) -> []Event {
 	return event_list[:]
 }
 
+feed_calendars :: proc(now: time.Time) -> []Event {
+	task_list := make([dynamic]Task)
+	defer delete(task_list)
+
+	load_tasks(&task_list, "cal.json")
+	event_list := generate_events(task_list[:], now)
+
+	event_sort_proc :: proc(i, j: Event) -> bool {
+		dur := time.diff(i.time, j.time)
+		return dur > 0
+	}
+	slice.sort_by(event_list[:], event_sort_proc)
+
+	return event_list[:]
+}
+
 main :: proc() {
 	now := time.now()
 	start_time := get_start_of_day(now)
 	end_time   := get_end_of_day(now)
-
-	task_list := make([dynamic]Task)
 
 	pt := Platform_State{}
 	pt.p_height = 14
@@ -1002,19 +1016,13 @@ main :: proc() {
 	stored_height := pt.height
 	stored_width  := pt.width
 
-	load_tasks(&task_list, "cal.json")
-	event_list := generate_events(task_list[:], now)
-
-	event_sort_proc :: proc(i, j: Event) -> bool {
-		dur := time.diff(i.time, j.time)
-		return dur > 0
-	}
-	slice.sort_by(event_list[:], event_sort_proc)
-
 	max_visible := 5
 	list_max    := 5
 
 	redact_enabled := true
+
+	event_list := feed_calendars(now)
+	last_updated := time.now()
 
 	ev := PlatformEvent{}
 	main_loop: for {
@@ -1053,6 +1061,13 @@ main :: proc() {
 		blit_clear(&pt, pt.colors.bg)
 
 		current_time := time.now()
+
+		update_window := time.diff(last_updated, current_time)
+		if time.duration_minutes(update_window) >= 5 {
+			delete(event_list)
+			event_list = feed_calendars(current_time)
+			last_updated = time.now()
+		}
 
 		side_min := min(pt.width / 2.5, pt.height / 2.5)
 		x_pos, y_pos := center_xy(pt.width, pt.height, side_min, side_min)
@@ -1225,17 +1240,21 @@ main :: proc() {
 
 			idx = day_start_idx
 			exit_next := false
+			tasks_finished := 0
 			i := 0
 			for ;; i += 1 {
 				event := &event_list[idx]
 				ev_name := event_name(event, redact_enabled)
 
 				if exit_next {
-					i -= 1
 					break
 				}
 				if time_compare(end_time, event.time) < 0 {
 					exit_next = true
+				}
+
+				if time_compare(current_time, event.time) > 0 {
+					tasks_finished = i
 				}
 
 				y_start := next_y(&pt, &list_y, padded_height, line_gap)
@@ -1257,7 +1276,7 @@ main :: proc() {
 			}
 
 			smidge := pt.em * 0.11
-			line_y := list_start + ((padded_height + line_gap) * f64(i - 1) + (padded_height))
+			line_y := list_start + ((padded_height + line_gap) * f64(tasks_finished) + (padded_height))
 			line_end_x := pt.width - (2 * pt.em)
 
 			draw_line(&pt, Vec2{far_fold_x, line_y - smidge}, Vec2{line_end_x, line_y - smidge}, smidge, pt.colors.active[0])
