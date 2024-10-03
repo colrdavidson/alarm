@@ -133,6 +133,9 @@ create_context :: proc(pt: ^Platform_State, title: cstring, width, height: int) 
 		orig_window_height = i32(f64(orig_window_height) * pt.dpr)
 	}
 
+	SDL.SetHint(SDL.HINT_MOUSE_FOCUS_CLICKTHROUGH, "1")
+	SDL.SetHint(SDL.HINT_VIDEO_ALLOW_SCREENSAVER, "1")
+
 	SDL.Init({.VIDEO})
 
 	GL_VERSION_MAJOR :: 3
@@ -144,8 +147,6 @@ create_context :: proc(pt: ^Platform_State, title: cstring, width, height: int) 
 	SDL.GL_SetAttribute(.MULTISAMPLEBUFFERS, 1)
 	SDL.GL_SetAttribute(.MULTISAMPLESAMPLES, 2)
 	SDL.GL_SetAttribute(SDL.GLattr.FRAMEBUFFER_SRGB_CAPABLE, 1)
-
-	SDL.SetHint(SDL.HINT_MOUSE_FOCUS_CLICKTHROUGH, "1")
 
 	window := SDL.CreateWindow(title, SDL.WINDOWPOS_CENTERED, SDL.WINDOWPOS_CENTERED, i32(width), i32(height), {.OPENGL, .RESIZABLE, .ALLOW_HIGHDPI})
 	if window == nil {
