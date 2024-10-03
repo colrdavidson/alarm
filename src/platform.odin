@@ -423,6 +423,8 @@ get_text_cache :: proc(pt: ^Platform_State, str: string, scale: FontSize, font_t
 
 		sf := stbtt.ScaleForMappingEmToPixels(fontinfo, pixel_height)
 		runes := utf8.string_to_runes(str)
+		defer delete(runes)
+
 		for ch, i in runes {
 			adv, lsb : i32
 			stbtt.GetCodepointHMetrics(fontinfo, ch, &adv, &lsb)
@@ -445,7 +447,10 @@ get_text_cache :: proc(pt: ^Platform_State, str: string, scale: FontSize, font_t
 
 		baseline := i32(f32(ascent) * sf) + 1
 		output   := make([]u8,  width * height)
+		defer delete(output)
+
 		output32 := make([]u32, width * height)
+		defer delete(output32)
 
 		font_temp := [256*256]u8{}
 		for ch, i in runes {
@@ -486,9 +491,6 @@ get_text_cache :: proc(pt: ^Platform_State, str: string, scale: FontSize, font_t
 		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
 		gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
 		gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, raw_data(output32))
-
-		delete(output)
-		delete(output32)
 
 		text_blob = LRU_Text{ handle, width, height }
 		lru.set(&pt.lru_text_cache, LRU_Key{ scale, font_type, long_str }, text_blob)
